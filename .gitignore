@@ -1,0 +1,30 @@
+# OS cruft
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Node (in case tooling is added later)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+package-lock.json
+
+# Packaged extension
+*.zip
+*.crx
+*.pem
+
+# Logs
+*.log
+
+# Env / secrets
+.env
+.env.*
