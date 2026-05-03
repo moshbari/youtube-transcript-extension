@@ -7,18 +7,50 @@
 <body>
   <div class="container">
     <h2>YT Scraper</h2>
-    <p>Get the full transcript of this video with a single click.</p>
-    <button id="scrapeBtn">Scrape Transcript</button>
-    <div id="status"></div>
 
-    <!-- Transcript viewer (hidden until data exists) -->
-    <div id="transcriptViewer" class="transcript-viewer" style="display:none;">
-      <div class="transcript-header">
-        <div id="videoTitle" class="video-title"></div>
-        <a id="videoUrl" class="video-url" target="_blank" rel="noopener"></a>
+    <!-- Mode tabs -->
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="single">Current Video</button>
+      <button class="mode-tab" data-mode="batch">Batch URLs</button>
+    </div>
+
+    <!-- Single video mode -->
+    <div id="singleMode" class="mode-panel active">
+      <p>Get the full transcript of this video with a single click.</p>
+      <button id="scrapeBtn">Scrape Transcript</button>
+      <div id="status"></div>
+
+      <!-- Transcript viewer (hidden until data exists) -->
+      <div id="transcriptViewer" class="transcript-viewer" style="display:none;">
+        <div class="transcript-header">
+          <div id="videoTitle" class="video-title"></div>
+          <a id="videoUrl" class="video-url" target="_blank" rel="noopener"></a>
+        </div>
+        <button id="copyBtn" class="copy-btn">Copy All</button>
+        <div id="transcriptContent" class="transcript-content"></div>
       </div>
-      <button id="copyBtn" class="copy-btn">Copy All</button>
-      <div id="transcriptContent" class="transcript-content"></div>
+    </div>
+
+    <!-- Batch mode -->
+    <div id="batchMode" class="mode-panel">
+      <p>Paste YouTube URLs (one per line). They'll be scraped one by one — leave it running.</p>
+      <textarea id="batchUrls" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/...&#10;https://www.youtube.com/shorts/..."></textarea>
+      <div class="batch-meta-row">
+        <div id="batchUrlCount" class="batch-url-count"></div>
+        <button id="batchClearBtn" class="batch-clear-btn" title="Clear all URLs">Clear</button>
+      </div>
+      <div class="batch-buttons">
+        <button id="batchScrapeBtn">Scrape All</button>
+        <button id="batchCancelBtn" class="cancel-btn" style="display:none;">Cancel</button>
+      </div>
+      <div id="batchStatus" class="batch-status"></div>
+
+      <!-- Progress section -->
+      <div id="batchProgress" class="batch-progress" style="display:none;">
+        <div class="batch-progress-bar"><div id="batchProgressFill" class="batch-progress-fill"></div></div>
+        <div id="batchProgressText" class="batch-progress-text"></div>
+        <div id="batchResults" class="batch-results"></div>
+      </div>
     </div>
   </div>
   <script src="popup.js"></script>

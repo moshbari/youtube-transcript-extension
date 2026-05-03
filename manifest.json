@@ -1,13 +1,15 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Scraper",
-  "version": "1.3",
-  "description": "Easily scrape transcripts from YouTube videos.",
+  "version": "1.4",
+  "description": "Easily scrape transcripts from YouTube videos. Supports batch processing of multiple URLs.",
   "permissions": [
     "activeTab",
     "scripting",
     "downloads",
-    "storage"
+    "storage",
+    "tabs",
+    "alarms"
   ],
   "icons": {
     "16": "icon16.png",
