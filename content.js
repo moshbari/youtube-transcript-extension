@@ -157,17 +157,26 @@
         .trim()
         .replace(/[. ]+$/, '')
         .slice(0, 150) || 'youtube';
+      const filename = `${safeTitle} [${videoId}].txt`;
 
-      // Download the .txt file
-      const blob = new Blob([fullText], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${safeTitle} [${videoId}].txt`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Build a UTF-8-safe data URL. Why a data URL routed through the
+      // background script's chrome.downloads.download() instead of the
+      // classic <a>.click() trick? Because the page-context approach
+      // hits Chrome's "block multiple automatic downloads" gate during
+      // batch scraping — only the first file lands. chrome.downloads
+      // runs as the extension and bypasses that throttle.
+      const utf8Bytes = new TextEncoder().encode(fullText);
+      let binStr = '';
+      for (let i = 0; i < utf8Bytes.length; i += 0x8000) {
+        binStr += String.fromCharCode.apply(null, utf8Bytes.subarray(i, i + 0x8000));
+      }
+      const dataUrl = 'data:text/plain;charset=utf-8;base64,' + btoa(binStr);
+
+      chrome.runtime.sendMessage({
+        action: 'download',
+        url: dataUrl,
+        filename
+      });
 
       // Save transcript data to chrome.storage.local for the popup to display
       chrome.storage.local.set({

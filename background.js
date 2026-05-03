@@ -219,6 +219,37 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return;
   }
 
+  // ----- file download (used by content.js for both single + batch) -----
+  // Centralizing downloads here lets us use chrome.downloads.download(),
+  // which runs with the extension's permissions and isn't subject to
+  // Chrome's per-site "block multiple automatic downloads" gate that
+  // breaks page-context batch downloads.
+  if (request.action === 'download') {
+    chrome.downloads.download({
+      url: request.url,
+      filename: request.filename,
+      saveAs: false,
+      conflictAction: 'uniquify'  // appends "(1)", "(2)" if the name collides
+    }, (downloadId) => {
+      if (chrome.runtime.lastError) {
+        // Surface failures up to the queue so a download-failed video
+        // gets recorded as failed instead of silently succeeding.
+        const errMsg = chrome.runtime.lastError.message || 'download failed';
+        getQueue().then(async (q) => {
+          if (!q || !q.active) return;
+          if (!sender.tab || sender.tab.id !== q.currentTabId) return;
+          if (q.lastInjectedIndex !== q.index) return;
+          await recordResultAndAdvance({
+            url: q.urls[q.index],
+            status: 'failed',
+            error: 'Download failed: ' + errMsg
+          });
+        });
+      }
+    });
+    return;
+  }
+
   // ----- batch control -----
   if (request.action === 'startBatch') {
     startBatch(request.urls || []);
