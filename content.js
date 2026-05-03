@@ -148,12 +148,22 @@
         fullText += `${line.timestamp} - ${line.text}\n`;
       }
 
+      // Build a filesystem-safe filename: "Title [VIDEOID].txt"
+      // Strip characters illegal on Windows/macOS, collapse whitespace,
+      // drop trailing dots/spaces (Windows quirk), and cap length.
+      const safeTitle = (videoTitle || '')
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/[. ]+$/, '')
+        .slice(0, 150) || 'youtube';
+
       // Download the .txt file
       const blob = new Blob([fullText], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = `${videoId}_transcript.txt`;
+      a.download = `${safeTitle} [${videoId}].txt`;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
