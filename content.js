@@ -159,22 +159,17 @@
         .slice(0, 150) || 'youtube';
       const filename = `${safeTitle} [${videoId}].txt`;
 
-      // Build a UTF-8-safe data URL. Why a data URL routed through the
-      // background script's chrome.downloads.download() instead of the
-      // classic <a>.click() trick? Because the page-context approach
-      // hits Chrome's "block multiple automatic downloads" gate during
-      // batch scraping — only the first file lands. chrome.downloads
-      // runs as the extension and bypasses that throttle.
-      const utf8Bytes = new TextEncoder().encode(fullText);
-      let binStr = '';
-      for (let i = 0; i < utf8Bytes.length; i += 0x8000) {
-        binStr += String.fromCharCode.apply(null, utf8Bytes.subarray(i, i + 0x8000));
-      }
-      const dataUrl = 'data:text/plain;charset=utf-8;base64,' + btoa(binStr);
-
+      // Send the raw text to the service worker so it can build a real
+      // Blob URL and hand it to chrome.downloads.download. Why not build
+      // a data: URL here?  Data URLs trigger a long-standing Chrome quirk
+      // where the suggested filename gets dropped and the file lands as
+      // "download.txt".  Blob URLs created in the worker are honored.
+      // The page-context <a download>.click() approach is also off the
+      // table — it gets eaten by Chrome's "block multiple automatic
+      // downloads" gate the moment we batch-scrape.
       chrome.runtime.sendMessage({
         action: 'download',
-        url: dataUrl,
+        text: fullText,
         filename
       });
 

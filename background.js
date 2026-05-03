@@ -26,6 +26,39 @@ const BATCH_KEY            = 'batchQueue';
 const PER_VIDEO_TIMEOUT_MIN = 2;   // chrome.alarms minimum granularity is ~30s
 const TIMEOUT_ALARM         = 'batchVideoTimeout';
 
+// ----- Download filename plumbing (see download handler for the why) -----
+// Map from Blob URL -> desired filename. Consumed by onDeterminingFilename.
+const pendingFilenames = new Map();
+// Map from download id -> Blob URL, so we can revoke after completion.
+const blobUrlsByDownloadId = new Map();
+
+// onDeterminingFilename fires after Chrome has chosen a tentative filename
+// but before the file is written. We override authoritatively here — this
+// is the only path that reliably keeps `Title [VIDEOID].txt` intact across
+// data/Blob URL quirks and special characters in the title.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  const desired = pendingFilenames.get(item.url) || pendingFilenames.get(item.finalUrl);
+  if (desired) {
+    pendingFilenames.delete(item.url);
+    if (item.finalUrl) pendingFilenames.delete(item.finalUrl);
+    suggest({ filename: desired, conflictAction: 'uniquify' });
+  } else {
+    suggest();   // no override — let Chrome decide
+  }
+});
+
+// Revoke the Blob URL once the download finishes (success or interrupt),
+// so we don't leak memory across a 22-video batch.
+chrome.downloads.onChanged.addListener((delta) => {
+  if (!delta.state || !delta.state.current) return;
+  const state = delta.state.current;
+  if (state !== 'complete' && state !== 'interrupted') return;
+  const blobUrl = blobUrlsByDownloadId.get(delta.id);
+  if (!blobUrl) return;
+  try { URL.revokeObjectURL(blobUrl); } catch {}
+  blobUrlsByDownloadId.delete(delta.id);
+});
+
 // ---------- queue state helpers ----------
 async function getQueue() {
   const r = await chrome.storage.local.get(BATCH_KEY);
@@ -224,17 +257,32 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // which runs with the extension's permissions and isn't subject to
   // Chrome's per-site "block multiple automatic downloads" gate that
   // breaks page-context batch downloads.
+  //
+  // We build a Blob URL in the service worker rather than passing a
+  // data: URL from content.js — Chrome's `filename` hint is unreliable
+  // for data URLs and the file ends up named "download.txt".  Blob URLs
+  // honor the filename. The onDeterminingFilename listener registered
+  // below also forces the name as a hard override, belt-and-braces.
   if (request.action === 'download') {
+    const blob = new Blob([request.text], { type: 'text/plain;charset=utf-8' });
+    const blobUrl = URL.createObjectURL(blob);
+
+    // Stash desired filename keyed by URL so onDeterminingFilename can
+    // pick it up — the download id isn't yet known when we call download().
+    pendingFilenames.set(blobUrl, request.filename);
+
     chrome.downloads.download({
-      url: request.url,
+      url: blobUrl,
       filename: request.filename,
       saveAs: false,
-      conflictAction: 'uniquify'  // appends "(1)", "(2)" if the name collides
+      conflictAction: 'uniquify'   // appends "(1)", "(2)" if name collides
     }, (downloadId) => {
       if (chrome.runtime.lastError) {
-        // Surface failures up to the queue so a download-failed video
-        // gets recorded as failed instead of silently succeeding.
         const errMsg = chrome.runtime.lastError.message || 'download failed';
+        pendingFilenames.delete(blobUrl);
+        URL.revokeObjectURL(blobUrl);
+        // Surface failures up to the queue so a download-failed video
+        // gets recorded as failed instead of silently advancing as success.
         getQueue().then(async (q) => {
           if (!q || !q.active) return;
           if (!sender.tab || sender.tab.id !== q.currentTabId) return;
@@ -245,7 +293,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             error: 'Download failed: ' + errMsg
           });
         });
+        return;
       }
+      // Track this download's blob URL so we can revoke it on completion.
+      blobUrlsByDownloadId.set(downloadId, blobUrl);
     });
     return;
   }
