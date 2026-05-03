@@ -159,17 +159,34 @@
         .slice(0, 150) || 'youtube';
       const filename = `${safeTitle} [${videoId}].txt`;
 
-      // Send the raw text to the service worker so it can build a real
-      // Blob URL and hand it to chrome.downloads.download. Why not build
-      // a data: URL here?  Data URLs trigger a long-standing Chrome quirk
-      // where the suggested filename gets dropped and the file lands as
-      // "download.txt".  Blob URLs created in the worker are honored.
-      // The page-context <a download>.click() approach is also off the
-      // table — it gets eaten by Chrome's "block multiple automatic
-      // downloads" gate the moment we batch-scrape.
+      // Build a UTF-8-safe data: URL and hand it to the service worker,
+      // which downloads it via chrome.downloads.download.
+      //
+      // Why data URL and not a Blob URL or page-context <a>.click()?
+      //   * <a download>.click() runs in the page (origin youtube.com)
+      //     and gets eaten by Chrome's "block multiple automatic
+      //     downloads" gate during batch scraping — only the first
+      //     file lands. chrome.downloads bypasses that.
+      //   * Blob URLs created in the service worker are unreliable —
+      //     if the worker suspends between createObjectURL and
+      //     Chrome's fetch, the URL is dead and the download
+      //     interrupts silently. Data URLs encode their content
+      //     inline, no lifetime issues.
+      //   * data URLs DO have a Chrome quirk where the suggested
+      //     `filename` is sometimes ignored and the file lands as
+      //     "download.txt". We fix that with a
+      //     chrome.downloads.onDeterminingFilename listener in the
+      //     service worker that authoritatively overrides the name.
+      const utf8Bytes = new TextEncoder().encode(fullText);
+      let binStr = '';
+      for (let i = 0; i < utf8Bytes.length; i += 0x8000) {
+        binStr += String.fromCharCode.apply(null, utf8Bytes.subarray(i, i + 0x8000));
+      }
+      const dataUrl = 'data:text/plain;charset=utf-8;base64,' + btoa(binStr);
+
       chrome.runtime.sendMessage({
         action: 'download',
-        text: fullText,
+        url: dataUrl,
         filename
       });
 

@@ -27,36 +27,38 @@ const PER_VIDEO_TIMEOUT_MIN = 2;   // chrome.alarms minimum granularity is ~30s
 const TIMEOUT_ALARM         = 'batchVideoTimeout';
 
 // ----- Download filename plumbing (see download handler for the why) -----
-// Map from Blob URL -> desired filename. Consumed by onDeterminingFilename.
+// Map from data URL -> desired filename. Consumed by onDeterminingFilename
+// to authoritatively override Chrome's filename inference, which is
+// unreliable for data: URLs and especially for filenames with brackets.
+//
+// We also keep a Map<downloadId, dataUrl> as a fallback lookup path in
+// case the listener-based override misses (it shouldn't, but defense in
+// depth) and so we can clean up pendingFilenames after each download.
 const pendingFilenames = new Map();
-// Map from download id -> Blob URL, so we can revoke after completion.
-const blobUrlsByDownloadId = new Map();
+const dataUrlByDownloadId = new Map();
 
-// onDeterminingFilename fires after Chrome has chosen a tentative filename
-// but before the file is written. We override authoritatively here — this
-// is the only path that reliably keeps `Title [VIDEOID].txt` intact across
-// data/Blob URL quirks and special characters in the title.
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  // item.url is the original requested URL we passed; item.finalUrl is
+  // post-redirect (irrelevant for data: URLs but check both).
   const desired = pendingFilenames.get(item.url) || pendingFilenames.get(item.finalUrl);
   if (desired) {
-    pendingFilenames.delete(item.url);
-    if (item.finalUrl) pendingFilenames.delete(item.finalUrl);
     suggest({ filename: desired, conflictAction: 'uniquify' });
   } else {
-    suggest();   // no override — let Chrome decide
+    suggest();   // let Chrome decide for downloads we didn't initiate
   }
 });
 
-// Revoke the Blob URL once the download finishes (success or interrupt),
-// so we don't leak memory across a 22-video batch.
+// Clean up pendingFilenames after each download finishes so the Map
+// doesn't accumulate large data URL keys across a long-running session.
 chrome.downloads.onChanged.addListener((delta) => {
   if (!delta.state || !delta.state.current) return;
   const state = delta.state.current;
   if (state !== 'complete' && state !== 'interrupted') return;
-  const blobUrl = blobUrlsByDownloadId.get(delta.id);
-  if (!blobUrl) return;
-  try { URL.revokeObjectURL(blobUrl); } catch {}
-  blobUrlsByDownloadId.delete(delta.id);
+  const dataUrl = dataUrlByDownloadId.get(delta.id);
+  if (dataUrl) {
+    pendingFilenames.delete(dataUrl);
+    dataUrlByDownloadId.delete(delta.id);
+  }
 });
 
 // ---------- queue state helpers ----------
@@ -258,29 +260,22 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Chrome's per-site "block multiple automatic downloads" gate that
   // breaks page-context batch downloads.
   //
-  // We build a Blob URL in the service worker rather than passing a
-  // data: URL from content.js — Chrome's `filename` hint is unreliable
-  // for data URLs and the file ends up named "download.txt".  Blob URLs
-  // honor the filename. The onDeterminingFilename listener registered
-  // below also forces the name as a hard override, belt-and-braces.
+  // The URL is a data: URL built by content.js — reliable across
+  // service-worker suspensions (unlike Blob URLs from the SW context,
+  // which can become invalid mid-download). The filename is forced via
+  // the onDeterminingFilename listener above, so Chrome's unreliable
+  // data-URL filename inference doesn't matter.
   if (request.action === 'download') {
-    const blob = new Blob([request.text], { type: 'text/plain;charset=utf-8' });
-    const blobUrl = URL.createObjectURL(blob);
-
-    // Stash desired filename keyed by URL so onDeterminingFilename can
-    // pick it up — the download id isn't yet known when we call download().
-    pendingFilenames.set(blobUrl, request.filename);
-
+    pendingFilenames.set(request.url, request.filename);
     chrome.downloads.download({
-      url: blobUrl,
-      filename: request.filename,
+      url: request.url,
+      filename: request.filename,    // hint; listener overrides authoritatively
       saveAs: false,
-      conflictAction: 'uniquify'   // appends "(1)", "(2)" if name collides
+      conflictAction: 'uniquify'     // appends "(1)", "(2)" if name collides
     }, (downloadId) => {
       if (chrome.runtime.lastError) {
         const errMsg = chrome.runtime.lastError.message || 'download failed';
-        pendingFilenames.delete(blobUrl);
-        URL.revokeObjectURL(blobUrl);
+        pendingFilenames.delete(request.url);
         // Surface failures up to the queue so a download-failed video
         // gets recorded as failed instead of silently advancing as success.
         getQueue().then(async (q) => {
@@ -295,8 +290,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         });
         return;
       }
-      // Track this download's blob URL so we can revoke it on completion.
-      blobUrlsByDownloadId.set(downloadId, blobUrl);
+      dataUrlByDownloadId.set(downloadId, request.url);
     });
     return;
   }
