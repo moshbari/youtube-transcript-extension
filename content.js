@@ -148,16 +148,19 @@
         fullText += `${line.timestamp} - ${line.text}\n`;
       }
 
-      // Build a filesystem-safe filename: "Title [VIDEOID].txt"
-      // Strip characters illegal on Windows/macOS, collapse whitespace,
-      // drop trailing dots/spaces (Windows quirk), and cap length.
+      // Build a filesystem-safe filename: "Title - VIDEOID.txt"
+      // Strip filesystem-illegal chars and a few extras (brackets, braces)
+      // that Chrome's downloads filename sanitizer has been known to choke
+      // on, collapse whitespace, drop trailing dots/spaces (Windows
+      // quirk), and cap length so "Title - VIDEOID.txt" stays under
+      // typical 255-byte path limits.
       const safeTitle = (videoTitle || '')
-        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '')
+        .replace(/[<>:"/\\|?*\x00-\x1F\[\]\{\}]/g, '')
         .replace(/\s+/g, ' ')
         .trim()
         .replace(/[. ]+$/, '')
         .slice(0, 150) || 'youtube';
-      const filename = `${safeTitle} [${videoId}].txt`;
+      const filename = `${safeTitle} - ${videoId}.txt`;
 
       // Build a UTF-8-safe data: URL and hand it to the service worker,
       // which downloads it via chrome.downloads.download.

@@ -26,38 +26,42 @@ const BATCH_KEY            = 'batchQueue';
 const PER_VIDEO_TIMEOUT_MIN = 2;   // chrome.alarms minimum granularity is ~30s
 const TIMEOUT_ALARM         = 'batchVideoTimeout';
 
-// ----- Download filename plumbing (see download handler for the why) -----
-// Map from data URL -> desired filename. Consumed by onDeterminingFilename
-// to authoritatively override Chrome's filename inference, which is
-// unreliable for data: URLs and especially for filenames with brackets.
+// ----- Download filename plumbing -----
+// Chrome ignores the chrome.downloads.download `filename` hint for
+// data: URLs and assigns "download.txt", so we override authoritatively
+// in chrome.downloads.onDeterminingFilename. We track pending names
+// two ways:
 //
-// We also keep a Map<downloadId, dataUrl> as a fallback lookup path in
-// case the listener-based override misses (it shouldn't, but defense in
-// depth) and so we can clean up pendingFilenames after each download.
-const pendingFilenames = new Map();
-const dataUrlByDownloadId = new Map();
+//   * A FIFO queue of filenames in download() order. onDeterminingFilename
+//     fires for each download in the same order, so popping the front of
+//     the queue yields the correct name. This is the primary path.
+//   * A Map<dataUrl, filename> backup, in case listener invocation order
+//     ever races with our queue (e.g. if some other code path also
+//     triggers a download before ours fires). URL match wins when present.
+const filenameFifo = [];
+const filenameByUrl = new Map();
 
 chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
-  // item.url is the original requested URL we passed; item.finalUrl is
-  // post-redirect (irrelevant for data: URLs but check both).
-  const desired = pendingFilenames.get(item.url) || pendingFilenames.get(item.finalUrl);
+  // Try URL match first (most precise), then fall back to FIFO order.
+  let desired = filenameByUrl.get(item.url) || filenameByUrl.get(item.finalUrl);
+  let matchedByUrl = !!desired;
+  if (!desired && filenameFifo.length > 0) {
+    desired = filenameFifo.shift();
+  }
+
   if (desired) {
+    if (matchedByUrl) {
+      // Drop URL key so it can't be reused.
+      filenameByUrl.delete(item.url);
+      if (item.finalUrl) filenameByUrl.delete(item.finalUrl);
+      // Also remove the corresponding FIFO entry so the queue stays
+      // in sync with what's left.
+      const idx = filenameFifo.indexOf(desired);
+      if (idx !== -1) filenameFifo.splice(idx, 1);
+    }
     suggest({ filename: desired, conflictAction: 'uniquify' });
   } else {
     suggest();   // let Chrome decide for downloads we didn't initiate
-  }
-});
-
-// Clean up pendingFilenames after each download finishes so the Map
-// doesn't accumulate large data URL keys across a long-running session.
-chrome.downloads.onChanged.addListener((delta) => {
-  if (!delta.state || !delta.state.current) return;
-  const state = delta.state.current;
-  if (state !== 'complete' && state !== 'interrupted') return;
-  const dataUrl = dataUrlByDownloadId.get(delta.id);
-  if (dataUrl) {
-    pendingFilenames.delete(dataUrl);
-    dataUrlByDownloadId.delete(delta.id);
   }
 });
 
@@ -260,22 +264,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Chrome's per-site "block multiple automatic downloads" gate that
   // breaks page-context batch downloads.
   //
-  // The URL is a data: URL built by content.js — reliable across
-  // service-worker suspensions (unlike Blob URLs from the SW context,
-  // which can become invalid mid-download). The filename is forced via
-  // the onDeterminingFilename listener above, so Chrome's unreliable
-  // data-URL filename inference doesn't matter.
+  // We deliberately do NOT pass `filename` to chrome.downloads.download.
+  // Chrome ignores that hint for data: URLs anyway, and passing it has
+  // been observed to make the listener path less reliable. Instead, the
+  // onDeterminingFilename listener above is the sole source of truth
+  // for the saved filename — it pops from filenameFifo / filenameByUrl
+  // when Chrome asks for a name.
   if (request.action === 'download') {
-    pendingFilenames.set(request.url, request.filename);
+    filenameFifo.push(request.filename);
+    filenameByUrl.set(request.url, request.filename);
+
     chrome.downloads.download({
       url: request.url,
-      filename: request.filename,    // hint; listener overrides authoritatively
       saveAs: false,
-      conflictAction: 'uniquify'     // appends "(1)", "(2)" if name collides
+      conflictAction: 'uniquify'
     }, (downloadId) => {
       if (chrome.runtime.lastError) {
         const errMsg = chrome.runtime.lastError.message || 'download failed';
-        pendingFilenames.delete(request.url);
+        // Roll back our filename bookkeeping so this entry doesn't get
+        // applied to the next download.
+        filenameByUrl.delete(request.url);
+        const idx = filenameFifo.indexOf(request.filename);
+        if (idx !== -1) filenameFifo.splice(idx, 1);
         // Surface failures up to the queue so a download-failed video
         // gets recorded as failed instead of silently advancing as success.
         getQueue().then(async (q) => {
@@ -288,9 +298,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
             error: 'Download failed: ' + errMsg
           });
         });
-        return;
       }
-      dataUrlByDownloadId.set(downloadId, request.url);
     });
     return;
   }
