@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <h2>YT Scraper</h2>
+    <p>Get the full transcript of this video with a single click.</p>
+    <button id="scrapeBtn">Scrape Transcript</button>
+    <div id="status"></div>
+
+    <!-- Transcript viewer (hidden until data exists) -->
+    <div id="transcriptViewer" class="transcript-viewer" style="display:none;">
+      <div class="transcript-header">
+        <div id="videoTitle" class="video-title"></div>
+        <a id="videoUrl" class="video-url" target="_blank" rel="noopener"></a>
+      </div>
+      <button id="copyBtn" class="copy-btn">Copy All</button>
+      <div id="transcriptContent" class="transcript-content"></div>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
