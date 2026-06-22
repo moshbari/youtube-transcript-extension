@@ -604,3 +604,17 @@ p {
 
 #tellaStatus { text-align: center; }
 #tellaResults { margin-top: 14px; }
+
+/* Batch → Council additions */
+.batch-council-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 12px; color: #ccc; margin: 4px 0 10px; cursor: pointer;
+}
+.batch-council-row input { accent-color: #ff0000; }
+.batch-council-msg {
+  margin-top: 8px; background: #0f1d15; border: 1px solid #244031;
+  border-radius: 8px; padding: 10px; white-space: pre-wrap;
+  line-height: 1.5; font-size: 12.5px; color: #e7e9ee; text-align: left;
+}
+.batch-council-copy { margin-top: 6px; }
+.batch-council-err { margin-top: 6px; font-size: 11px; color: #ff8888; }

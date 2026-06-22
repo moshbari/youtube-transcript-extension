@@ -196,12 +196,26 @@ batchScrapeBtn.addEventListener('click', () => {
   if (found.length === 0) return;
 
   const urls = found.map(v => v.url);
-  batchStatusEl.textContent = `Starting batch of ${urls.length} videos...`;
+  const toCouncil = document.getElementById('batchToCouncil').checked;
+  const lang = document.getElementById('batchLang').value;
+  batchStatusEl.textContent = toCouncil
+    ? `Starting batch of ${urls.length} videos → Council...`
+    : `Starting batch of ${urls.length} videos...`;
   batchStatusEl.style.color = '#00ff88';
   setBatchUiActive(true);
 
-  chrome.runtime.sendMessage({ action: 'startBatch', urls });
+  chrome.runtime.sendMessage({ action: 'startBatch', urls, toCouncil, lang });
 });
+
+// Council toggle: reveal the language picker + relabel the action button.
+(function () {
+  const cb = document.getElementById('batchToCouncil');
+  const langSel = document.getElementById('batchLang');
+  if (cb) cb.addEventListener('change', () => {
+    if (langSel) langSel.style.display = cb.checked ? '' : 'none';
+    batchScrapeBtn.textContent = cb.checked ? 'Scrape all → Council' : 'Scrape All';
+  });
+})();
 
 batchCancelBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ action: 'cancelBatch' });
@@ -244,10 +258,23 @@ function renderBatchProgress(state) {
       const label = ok
         ? (r.title || r.url) + (r.lines ? ` (${r.lines} lines)` : '')
         : `${shortUrl(r.url)} — ${r.error || 'failed'}`;
+      let extra = '';
+      const pm = r.move && r.move.primary_message;
+      if (ok && pm && pm.text) {
+        const mid = 'bmsg_' + i;
+        const heat = (typeof r.move.heat_score === 'number') ? ` 🔥${r.move.heat_score}/10` : '';
+        extra =
+          `<div class="batch-council-msg" id="${mid}">${escapeHtml(pm.text)}</div>` +
+          `<button class="copy-btn batch-council-copy" data-target="${mid}">Copy follow-up${heat}</button>`;
+      } else if (ok && r.councilError) {
+        extra = `<div class="batch-council-err">Council: ${escapeHtml(r.councilError)}</div>`;
+      }
+      const blockStyle = (ok && (pm || r.councilError)) ? ' style="display:block;"' : '';
       items.push(
-        `<div class="batch-result-item">` +
+        `<div class="batch-result-item"${blockStyle}>` +
         `<span class="batch-result-icon ${cls}">${icon}</span>` +
         `<span class="batch-result-text${ok ? '' : ' failed'}">${escapeHtml(label)}</span>` +
+        extra +
         `</div>`
       );
     } else if (i === results.length && state.active) {
@@ -267,6 +294,16 @@ function renderBatchProgress(state) {
     }
   }
   batchResultsEl.innerHTML = items.join('');
+  batchResultsEl.querySelectorAll('.batch-council-copy').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const el = document.getElementById(btn.dataset.target);
+      if (!el) return;
+      navigator.clipboard.writeText(el.textContent).then(() => {
+        const t = btn.textContent; btn.textContent = 'Copied!';
+        setTimeout(() => (btn.textContent = t), 1500);
+      });
+    });
+  });
 }
 
 function shortUrl(url) {

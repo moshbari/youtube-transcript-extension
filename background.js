@@ -96,7 +96,7 @@ async function broadcastState(extra = {}) {
 }
 
 // ---------- start / cancel ----------
-async function startBatch(urls) {
+async function startBatch(urls, opts = {}) {
   // If a batch is already in progress, refuse — popup should not let this happen,
   // but be defensive.
   const existing = await getQueue();
@@ -110,10 +110,39 @@ async function startBatch(urls) {
     currentTabId: null,
     lastInjectedIndex: -1,
     lastMessage: 'Starting...',
+    // When toCouncil is on, each scraped transcript is sent to The Closer's
+    // Council and the follow-up is stored on that video's result.
+    toCouncil: !!opts.toCouncil,
+    lang: opts.lang || 'bn',
     results: []
   };
   await setQueue(queue);
   await processNext();
+}
+
+// Send one transcript to the Council (via the backend) and wait for the move.
+// Frequent polling keeps the service worker alive through the multi-minute run.
+const COUNCIL_BACKEND = 'https://tellatotube.up.railway.app';
+async function councilForTranscript({ transcript, title, lang }) {
+  const startRes = await fetch(`${COUNCIL_BACKEND}/followup/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transcript, prospectName: '', notes: title || '', situation: '', lang }),
+  });
+  const start = await startRes.json();
+  if (!start.ok || !start.jobId) throw new Error(start.error || 'Could not start the Council run.');
+
+  const deadline = Date.now() + 15 * 60 * 1000;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 8000));
+    let st;
+    try { st = await (await fetch(`${COUNCIL_BACKEND}/followup/status/${start.jobId}`)).json(); }
+    catch { continue; }
+    if (st.done) {
+      if (st.failed || !st.move) throw new Error(st.error || 'The Council run failed.');
+      return { move: st.move, prospectName: st.prospectName || '' };
+    }
+  }
+  throw new Error('The Council took too long.');
 }
 
 async function cancelBatch() {
@@ -294,7 +323,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // ----- batch control -----
   if (request.action === 'startBatch') {
-    startBatch(request.urls || []);
+    startBatch(request.urls || [], { toCouncil: !!request.toCouncil, lang: request.lang });
     return;
   }
 
@@ -323,13 +352,34 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Guard: if the index advanced already (e.g. timeout fired and moved on),
       // lastInjectedIndex was reset and won't match — ignore late messages.
       if (q.lastInjectedIndex !== q.index) return;
-      await recordResultAndAdvance({
+
+      const base = {
         url: request.url || q.urls[q.index],
         videoId: request.videoId,
         title: request.title,
         status: 'success',
-        lines: request.lines
-      });
+        lines: request.lines,
+      };
+
+      // Plain "scrape only" batch — record and move on, as before.
+      if (!q.toCouncil) { await recordResultAndAdvance(base); return; }
+
+      // Council batch — stop the per-video timeout, get the follow-up, then advance.
+      chrome.alarms.clear(TIMEOUT_ALARM);
+      q.lastMessage = `Getting follow-up for "${request.title || 'video'}"…`;
+      await setQueue(q);
+      await broadcastState();
+      try {
+        const { move, prospectName } = await councilForTranscript({
+          transcript: request.plainText || request.text || '',
+          title: request.title,
+          lang: q.lang || 'bn',
+        });
+        await recordResultAndAdvance({ ...base, move, prospectName });
+      } catch (e) {
+        // Scrape succeeded but the Council step failed — keep the transcript win.
+        await recordResultAndAdvance({ ...base, councilError: e.message });
+      }
     });
     return;
   }
