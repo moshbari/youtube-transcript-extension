@@ -425,7 +425,9 @@ async function broadcastTella() {
   broadcast('tellaState', { jobs: Object.values(jobs).sort((a, b) => b.created - a.created) });
 }
 function ensureTellaAlarm() {
-  chrome.alarms.create(TELLA_ALARM, { periodInMinutes: 5, delayInMinutes: 5 });
+  // Poll roughly every minute (first tick ~30s) so uploads are detected quickly.
+  // Transcript scraping is throttled separately to ~5 min (see pollTellaJobs).
+  chrome.alarms.create(TELLA_ALARM, { delayInMinutes: 0.5, periodInMinutes: 1 });
 }
 function extractYtId(url) {
   if (!url) return null;
@@ -572,8 +574,10 @@ async function pollTellaJobs() {
 
   for (const job of active) {
     if (job.stage === 'uploading') { await pollTellaUpload(job); continue; }
+    // 'waiting' stage — only attempt a scrape ~every 5 min (the alarm itself ticks faster).
+    if (job.lastScrapeAt && (Date.now() - job.lastScrapeAt) < 4.5 * 60 * 1000) continue;
     const attempts = (job.attempts || 0) + 1;
-    await patchTellaJob(job.id, { attempts, lastMessage: `Checking for transcript (try ${attempts})…` });
+    await patchTellaJob(job.id, { attempts, lastScrapeAt: Date.now(), lastMessage: `Checking for transcript (try ${attempts})…` });
     await broadcastTella();
 
     const r = await scrapeYoutube(job.videoId);

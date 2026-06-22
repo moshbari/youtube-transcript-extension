@@ -818,3 +818,10 @@ chrome.runtime.sendMessage({ action: 'getTellaState' }, (resp) => {
 chrome.runtime.onMessage.addListener((request) => {
   if (request.action === 'tellaState') renderTellaJobs(request.jobs);
 });
+// Keep the panel live even between broadcasts: read stored jobs every few seconds.
+setInterval(() => {
+  chrome.storage.local.get('tellaJobs', (r) => {
+    const jobs = r.tellaJobs ? Object.values(r.tellaJobs).sort((a, b) => b.created - a.created) : [];
+    if (jobs.length) renderTellaJobs(jobs);
+  });
+}, 4000);
