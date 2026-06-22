@@ -259,17 +259,12 @@ function renderBatchProgress(state) {
         ? (r.title || r.url) + (r.lines ? ` (${r.lines} lines)` : '')
         : `${shortUrl(r.url)} — ${r.error || 'failed'}`;
       let extra = '';
-      const pm = r.move && r.move.primary_message;
-      if (ok && pm && pm.text) {
-        const mid = 'bmsg_' + i;
-        const heat = (typeof r.move.heat_score === 'number') ? ` 🔥${r.move.heat_score}/10` : '';
-        extra =
-          `<div class="batch-council-msg" id="${mid}">${escapeHtml(pm.text)}</div>` +
-          `<button class="copy-btn batch-council-copy" data-target="${mid}">Copy follow-up${heat}</button>`;
+      if (ok && r.councilSent) {
+        extra = `<div class="batch-council-ok">✓ Sent to The Closer's Council${r.prospectName ? ' — ' + escapeHtml(r.prospectName) : ''}</div>`;
       } else if (ok && r.councilError) {
         extra = `<div class="batch-council-err">Council: ${escapeHtml(r.councilError)}</div>`;
       }
-      const blockStyle = (ok && (pm || r.councilError)) ? ' style="display:block;"' : '';
+      const blockStyle = (ok && (r.councilSent || r.councilError)) ? ' style="display:block;"' : '';
       items.push(
         `<div class="batch-result-item"${blockStyle}>` +
         `<span class="batch-result-icon ${cls}">${icon}</span>` +
@@ -775,46 +770,26 @@ const tellaResultsEl  = document.getElementById('tellaResults');
 const TELLA_STAGE_LABEL = {
   uploading: 'Uploading to YouTube',
   waiting: 'Waiting for transcript',
-  council: 'Asking the Council',
-  done: 'Done',
+  done: 'Sent to The Closer\u2019s Council ✓',
   failed: 'Failed',
 };
 
 function renderTellaJobs(jobs) {
   if (!jobs || !jobs.length) { tellaResultsEl.innerHTML = ''; return; }
   tellaResultsEl.innerHTML = jobs.map((j) => {
-    const move = j.move || {};
-    const pm = move.primary_message || {};
-    const heat = (typeof move.heat_score === 'number') ? move.heat_score : null;
     let html = '<div class="batch-result-item" style="display:block;border:1px solid #2a2f3a;border-radius:8px;padding:10px;margin-bottom:8px;">';
     const stageColor = j.stage === 'done' ? '#00ff88' : (j.stage === 'failed' ? '#ff6b6b' : '#f5c451');
-    html += `<div style="font-weight:600;color:${stageColor};">${escapeHtml(TELLA_STAGE_LABEL[j.stage] || j.stage)}`;
-    if (heat !== null) html += ` &nbsp;🔥 ${heat}/10`;
-    html += '</div>';
+    html += `<div style="font-weight:600;color:${stageColor};">${escapeHtml(TELLA_STAGE_LABEL[j.stage] || j.stage)}</div>`;
     html += `<div style="font-size:11px;color:#9aa3b2;margin:3px 0;">${escapeHtml(j.lastMessage || '')}</div>`;
     if (j.youtubeUrl) html += `<div style="font-size:11px;">▶️ <a href="${escapeHtml(j.youtubeUrl)}" target="_blank" rel="noopener" style="color:#00ff88;">${escapeHtml(j.youtubeUrl)}</a></div>`;
     if (j.stage === 'failed' && j.error) html += `<div style="font-size:11px;color:#ff6b6b;margin-top:4px;">${escapeHtml(j.error)}</div>`;
-    if (j.stage === 'done' && pm.text) {
-      const mid = 'tmsg_' + j.id;
-      html += `<div style="margin-top:8px;background:#0f1d15;border:1px solid #244031;border-radius:8px;padding:10px;white-space:pre-wrap;font-size:13px;line-height:1.5;" id="${mid}">${escapeHtml(pm.text)}</div>`;
-      html += `<button class="copy-btn tella-copy" data-target="${mid}" style="margin-top:6px;">Copy message</button>`;
-      html += ` <a href="https://thecloserscouncil.99dfy.com" target="_blank" rel="noopener" class="copy-btn" style="margin-top:6px;text-decoration:none;display:inline-block;">Open in The Closer's Council</a>`;
-      if (j.resultProspectName) html += `<div style="font-size:11px;color:#9aa3b2;margin-top:4px;">🗂️ Saved to Council as: <strong>${escapeHtml(j.resultProspectName)}</strong></div>`;
+    if (j.stage === 'done') {
+      if (j.resultProspectName) html += `<div style="font-size:11px;color:#9aa3b2;margin-top:4px;">🗂️ Saved to the Council as: <strong>${escapeHtml(j.resultProspectName)}</strong></div>`;
+      html += `<a href="https://thecloserscouncil.99dfy.com" target="_blank" rel="noopener" class="copy-btn" style="margin-top:8px;text-decoration:none;display:inline-block;">Open The Closer\u2019s Council</a>`;
     }
     html += '</div>';
     return html;
   }).join('');
-
-  tellaResultsEl.querySelectorAll('.tella-copy').forEach((btn) => {
-    btn.addEventListener('click', () => {
-      const el = document.getElementById(btn.dataset.target);
-      if (!el) return;
-      navigator.clipboard.writeText(el.textContent).then(() => {
-        btn.textContent = 'Copied!';
-        setTimeout(() => (btn.textContent = 'Copy message'), 1500);
-      });
-    });
-  });
 }
 
 if (tellaRunBtn) {

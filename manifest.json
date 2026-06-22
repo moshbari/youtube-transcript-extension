@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Scraper",
-  "version": "1.9",
+  "version": "2.0",
   "description": "Scrape YouTube transcripts (single, batch, or by name), or run Tella calls end-to-end: upload to YouTube, auto-grab the transcript, and get a follow-up from The Closer's Council.",
   "permissions": [
     "activeTab",

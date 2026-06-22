@@ -633,3 +633,5 @@ p {
   cursor: pointer;
 }
 #batchLang:focus { outline: none; border-color: #ff0000; }
+
+.batch-council-ok { margin-top: 8px; font-size: 12px; color: #00ff88; }

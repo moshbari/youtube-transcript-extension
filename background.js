@@ -120,29 +120,20 @@ async function startBatch(urls, opts = {}) {
   await processNext();
 }
 
-// Send one transcript to the Council (via the backend) and wait for the move.
-// Frequent polling keeps the service worker alive through the multi-minute run.
+// ---- Send a transcript to The Closer's Council (fire-and-forget) ----
+// The extension's only job is to hand off the transcript. The Council runs the
+// analysis on its own server and saves it to the prospect's diary; the user
+// reads the result by logging into the Council, not here.
 const COUNCIL_BACKEND = 'https://tellatotube.up.railway.app';
-async function councilForTranscript({ transcript, title, lang }) {
-  const startRes = await fetch(`${COUNCIL_BACKEND}/followup/start`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ transcript, prospectName: '', notes: title || '', situation: '', lang }),
-  });
-  const start = await startRes.json();
-  if (!start.ok || !start.jobId) throw new Error(start.error || 'Could not start the Council run.');
 
-  const deadline = Date.now() + 15 * 60 * 1000;
-  while (Date.now() < deadline) {
-    await new Promise((r) => setTimeout(r, 8000));
-    let st;
-    try { st = await (await fetch(`${COUNCIL_BACKEND}/followup/status/${start.jobId}`)).json(); }
-    catch { continue; }
-    if (st.done) {
-      if (st.failed || !st.move) throw new Error(st.error || 'The Council run failed.');
-      return { move: st.move, prospectName: st.prospectName || '' };
-    }
-  }
-  throw new Error('The Council took too long.');
+async function sendToCouncil({ transcript, prospectName = '', notes = '', situation = '', lang }) {
+  const res = await fetch(`${COUNCIL_BACKEND}/followup/start`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ transcript, prospectName, notes, situation, lang }),
+  });
+  const data = await res.json();
+  if (!data.ok) throw new Error(data.error || 'Could not send to the Council.');
+  return { prospectName: data.prospectName || '' };
 }
 
 async function cancelBatch() {
@@ -364,20 +355,16 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // Plain "scrape only" batch — record and move on, as before.
       if (!q.toCouncil) { await recordResultAndAdvance(base); return; }
 
-      // Council batch — stop the per-video timeout, get the follow-up, then advance.
+      // Council batch — fire-and-forget: send the transcript, mark it sent, advance.
       chrome.alarms.clear(TIMEOUT_ALARM);
-      q.lastMessage = `Getting follow-up for "${request.title || 'video'}"…`;
-      await setQueue(q);
-      await broadcastState();
       try {
-        const { move, prospectName } = await councilForTranscript({
+        const { prospectName } = await sendToCouncil({
           transcript: request.plainText || request.text || '',
-          title: request.title,
+          notes: request.title,
           lang: q.lang || 'bn',
         });
-        await recordResultAndAdvance({ ...base, move, prospectName });
+        await recordResultAndAdvance({ ...base, councilSent: true, prospectName });
       } catch (e) {
-        // Scrape succeeded but the Council step failed — keep the transcript win.
         await recordResultAndAdvance({ ...base, councilError: e.message });
       }
     });
@@ -525,28 +512,23 @@ async function runTellaUpload(jobId) {
   }
 }
 
-// ----- step 3a: kick off the Council run (returns fast with a jobId) -----
-async function startTellaCouncil(jobId) {
+// ----- step 3: send the transcript to the Council (fire-and-forget) -----
+async function sendTellaToCouncil(jobId) {
   const jobs = await getTellaJobs();
   const job = jobs[jobId];
   if (!job) return;
   try {
-    const res = await fetch(`${TELLA_BACKEND}/followup/start`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        transcript: job.transcript,
-        prospectName: job.prospectName,
-        // Empty "what you know about them" defaults to the video title.
-        notes: job.notes || job.title || '',
-        situation: job.situation || '',
-        lang: job.lang,
-      }),
+    const { prospectName } = await sendToCouncil({
+      transcript: job.transcript,
+      prospectName: job.prospectName,
+      notes: job.notes || job.title || '', // empty "what you know" defaults to video title
+      situation: job.situation || '',
+      lang: job.lang,
     });
-    const data = await res.json();
-    if (!data.ok || !data.jobId) throw new Error(data.error || 'Could not start the Council run.');
     await patchTellaJob(jobId, {
-      stage: 'council', councilJobId: data.jobId, councilPolls: 0,
-      lastMessage: 'The Council is writing your follow-up…',
+      stage: 'done', councilSent: true,
+      resultProspectName: prospectName || job.prospectName,
+      lastMessage: 'Sent to The Closer’s Council ✓',
     });
   } catch (e) {
     await patchTellaJob(jobId, { stage: 'failed', error: 'Council error: ' + e.message });
@@ -554,54 +536,22 @@ async function startTellaCouncil(jobId) {
   await broadcastTella();
 }
 
-// ----- step 3b: poll an in-progress Council run (one quick check) -----
-async function pollTellaCouncil(job) {
-  const polls = (job.councilPolls || 0) + 1;
-  await patchTellaJob(job.id, { councilPolls: polls });
-  try {
-    const res = await fetch(`${TELLA_BACKEND}/followup/status/${job.councilJobId}`);
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'status error');
-    if (data.done) {
-      if (data.failed || !data.move) {
-        await patchTellaJob(job.id, { stage: 'failed', error: data.error || 'The Council run failed.' });
-      } else {
-        await patchTellaJob(job.id, {
-          stage: 'done', move: data.move,
-          resultProspectName: data.prospectName || job.prospectName,
-          lastMessage: 'Done — follow-up ready.',
-        });
-      }
-    } else {
-      await patchTellaJob(job.id, { lastMessage: `The Council is still working… (check ${polls})` });
-    }
-  } catch (e) {
-    if (polls >= 40) await patchTellaJob(job.id, { stage: 'failed', error: 'Council polling failed: ' + e.message });
-  }
-  await broadcastTella();
-}
-
-// ----- step 2: alarm tick — scrape waiting jobs, poll in-progress Council jobs -----
+// ----- step 2: alarm tick — scrape waiting jobs, then send each to the Council -----
 async function pollTellaJobs() {
   const jobs = await getTellaJobs();
-  const active = Object.values(jobs).filter((j) => j.stage === 'waiting' || j.stage === 'council');
-  if (!active.length) { chrome.alarms.clear(TELLA_ALARM); return; }
+  const waiting = Object.values(jobs).filter((j) => j.stage === 'waiting');
+  if (!waiting.length) { chrome.alarms.clear(TELLA_ALARM); return; }
 
-  for (const job of active) {
-    if (job.stage === 'council') {
-      await pollTellaCouncil(job);
-      continue;
-    }
-    // stage === 'waiting' : try to scrape the YouTube transcript
+  for (const job of waiting) {
     const attempts = (job.attempts || 0) + 1;
     await patchTellaJob(job.id, { attempts, lastMessage: `Checking for transcript (try ${attempts})…` });
     await broadcastTella();
 
     const r = await scrapeYoutube(job.videoId);
     if (r.ok && r.plainText && r.plainText.length > 20) {
-      await patchTellaJob(job.id, { transcript: r.plainText, lastMessage: 'Transcript ready — starting the Council…' });
+      await patchTellaJob(job.id, { transcript: r.plainText, lastMessage: 'Transcript ready — sending to the Council…' });
       await broadcastTella();
-      await startTellaCouncil(job.id);
+      await sendTellaToCouncil(job.id);
     } else if (attempts >= (job.maxAttempts || TELLA_MAX_ATTEMPTS)) {
       await patchTellaJob(job.id, { stage: 'failed', error: 'Transcript still not available after many tries — YouTube may not have generated captions for this video.' });
       await broadcastTella();
@@ -612,7 +562,7 @@ async function pollTellaJobs() {
   }
 
   const after = await getTellaJobs();
-  if (Object.values(after).some((j) => j.stage === 'waiting' || j.stage === 'council')) ensureTellaAlarm();
+  if (Object.values(after).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
   else chrome.alarms.clear(TELLA_ALARM);
 }
 
@@ -664,5 +614,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // On service-worker startup, resume polling if any jobs are still in flight.
 getTellaJobs().then((jobs) => {
-  if (Object.values(jobs).some((j) => j.stage === 'waiting' || j.stage === 'council')) ensureTellaAlarm();
+  if (Object.values(jobs).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
 });
