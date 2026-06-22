@@ -281,7 +281,7 @@ function renderBatchProgress(state) {
       items.push(
         `<div class="batch-result-item">` +
         `<span class="batch-result-icon active">…</span>` +
-        `<span class="batch-result-text">${escapeHtml(shortUrl((state.urls || [])[i] || ''))} — scraping…</span>` +
+        `<span class="batch-result-text">${escapeHtml(shortUrl((state.urls || [])[i] || ''))} — ${escapeHtml(state.lastMessage || 'scraping…')}</span>` +
         `</div>`
       );
     } else {
