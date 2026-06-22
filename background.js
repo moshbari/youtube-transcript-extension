@@ -492,23 +492,51 @@ async function runTellaUpload(jobId) {
   try {
     await patchTellaJob(jobId, { lastMessage: 'Uploading to YouTube…' });
     await broadcastTella();
-    const res = await fetch(`${TELLA_BACKEND}/upload`, {
+    // Start the upload in the background on the server; we poll for it on the
+    // alarm so the service worker sleeping mid-upload can't lose the result.
+    const res = await fetch(`${TELLA_BACKEND}/upload/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ tellaUrl: job.tellaUrl }),
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'Upload failed');
-    const videoId = extractYtId(data.youtubeUrl);
-    if (!videoId) throw new Error('Could not read the YouTube video id from the upload.');
+    if (!data.ok || !data.uploadId) throw new Error(data.error || 'Could not start the upload.');
     await patchTellaJob(jobId, {
-      stage: 'waiting', youtubeUrl: data.youtubeUrl, videoId, title: data.title || '',
-      attempts: 0, lastMessage: 'Uploaded. Waiting for YouTube to generate the transcript…',
+      uploadId: data.uploadId,
+      lastMessage: 'Uploading to YouTube… (this can take a few minutes)',
     });
     await broadcastTella();
     ensureTellaAlarm();
   } catch (e) {
     await patchTellaJob(jobId, { stage: 'failed', error: e.message });
     await broadcastTella();
+  }
+}
+
+// Poll an in-progress upload (alarm-driven). On success -> move to scrape stage.
+async function pollTellaUpload(job) {
+  if (!job.uploadId) {
+    // Legacy/interrupted job from an older version — can't recover it.
+    await patchTellaJob(job.id, { stage: 'failed', error: 'This upload was interrupted by an old version. The video may already be on YouTube — run it again, or use the Batch tab with its YouTube link.' });
+    await broadcastTella();
+    return;
+  }
+  try {
+    const data = await (await fetch(`${TELLA_BACKEND}/upload/status/${job.uploadId}`)).json();
+    if (data.done) {
+      if (data.succeeded && data.youtubeUrl) {
+        const videoId = extractYtId(data.youtubeUrl);
+        await patchTellaJob(job.id, {
+          stage: 'waiting', youtubeUrl: data.youtubeUrl, videoId, title: data.title || job.title || '',
+          attempts: 0, lastMessage: 'Uploaded ✓ — waiting for YouTube to generate the transcript…',
+        });
+      } else {
+        await patchTellaJob(job.id, { stage: 'failed', error: data.error || 'Upload failed.' });
+      }
+      await broadcastTella();
+    }
+    // not done yet → leave as-is, check again next tick
+  } catch (e) {
+    // transient — retry next tick
   }
 }
 
@@ -539,10 +567,11 @@ async function sendTellaToCouncil(jobId) {
 // ----- step 2: alarm tick — scrape waiting jobs, then send each to the Council -----
 async function pollTellaJobs() {
   const jobs = await getTellaJobs();
-  const waiting = Object.values(jobs).filter((j) => j.stage === 'waiting');
-  if (!waiting.length) { chrome.alarms.clear(TELLA_ALARM); return; }
+  const active = Object.values(jobs).filter((j) => j.stage === 'uploading' || j.stage === 'waiting');
+  if (!active.length) { chrome.alarms.clear(TELLA_ALARM); return; }
 
-  for (const job of waiting) {
+  for (const job of active) {
+    if (job.stage === 'uploading') { await pollTellaUpload(job); continue; }
     const attempts = (job.attempts || 0) + 1;
     await patchTellaJob(job.id, { attempts, lastMessage: `Checking for transcript (try ${attempts})…` });
     await broadcastTella();
@@ -562,7 +591,7 @@ async function pollTellaJobs() {
   }
 
   const after = await getTellaJobs();
-  if (Object.values(after).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
+  if (Object.values(after).some((j) => j.stage === 'uploading' || j.stage === 'waiting')) ensureTellaAlarm();
   else chrome.alarms.clear(TELLA_ALARM);
 }
 
@@ -614,5 +643,5 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 // On service-worker startup, resume polling if any jobs are still in flight.
 getTellaJobs().then((jobs) => {
-  if (Object.values(jobs).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
+  if (Object.values(jobs).some((j) => j.stage === 'uploading' || j.stage === 'waiting')) ensureTellaAlarm();
 });
