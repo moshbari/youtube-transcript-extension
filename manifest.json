@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Scraper",
-  "version": "1.4",
-  "description": "Easily scrape transcripts from YouTube videos. Supports batch processing of multiple URLs.",
+  "version": "2.0",
+  "description": "Scrape YouTube transcripts, or run Tella calls end-to-end: upload to YouTube, auto-grab the transcript, and get a follow-up from The Closer's Council.",
   "permissions": [
     "activeTab",
     "scripting",
@@ -29,6 +29,7 @@
     "service_worker": "background.js"
   },
   "host_permissions": [
-    "https://www.youtube.com/*"
+    "https://www.youtube.com/*",
+    "https://tellatotube.up.railway.app/*"
   ]
 }

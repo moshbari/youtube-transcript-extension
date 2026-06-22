@@ -359,3 +359,228 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return;
   }
 });
+
+// =====================================================================
+//  Tella → Follow-up pipeline (fallback flow)
+// =====================================================================
+//
+//  Flow per job:
+//    1. POST the Tella link to the backend /upload  -> YouTube (unlisted)
+//    2. Every 5 min, open the YouTube watch page in a background tab and
+//       run content.js to scrape the transcript (retry until YouTube has
+//       generated it).
+//    3. POST the scraped transcript to the backend /followup, which forwards
+//       it to The Closer's Council (key stays server-side) -> next-move plan.
+//
+//  Jobs persist in chrome.storage.local.tellaJobs so they survive
+//  service-worker termination; a periodic chrome.alarm drives the polling.
+
+const TELLA_BACKEND = 'https://tellatotube.up.railway.app';
+const TELLA_JOBS_KEY = 'tellaJobs';
+const TELLA_ALARM = 'tellaPoll';
+const TELLA_MAX_ATTEMPTS = 36;        // 36 * 5 min = 3 hours of polling
+const TELLA_SCRAPE_TIMEOUT_MS = 150000;
+
+async function getTellaJobs() {
+  const r = await chrome.storage.local.get(TELLA_JOBS_KEY);
+  return r[TELLA_JOBS_KEY] || {};
+}
+async function setTellaJobs(jobs) {
+  await chrome.storage.local.set({ [TELLA_JOBS_KEY]: jobs });
+}
+async function patchTellaJob(id, patch) {
+  const jobs = await getTellaJobs();
+  if (!jobs[id]) return;
+  Object.assign(jobs[id], patch, { updated: Date.now() });
+  await setTellaJobs(jobs);
+}
+async function broadcastTella() {
+  const jobs = await getTellaJobs();
+  broadcast('tellaState', { jobs: Object.values(jobs).sort((a, b) => b.created - a.created) });
+}
+function ensureTellaAlarm() {
+  chrome.alarms.create(TELLA_ALARM, { periodInMinutes: 5, delayInMinutes: 5 });
+}
+function extractYtId(url) {
+  if (!url) return null;
+  let m = url.match(/youtu\.be\/([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  m = url.match(/[?&]v=([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  return null;
+}
+
+// ----- open a YT watch page in the background and scrape via content.js -----
+const tellaScrapeResolvers = new Map(); // tabId -> resolve()
+
+function scrapeYoutube(videoId) {
+  return new Promise((resolve) => {
+    const url = `https://www.youtube.com/watch?v=${videoId}`;
+    let settled = false;
+    let createdTabId = null;
+    const finish = (result) => {
+      if (settled) return; settled = true;
+      clearTimeout(timer);
+      if (createdTabId != null) {
+        tellaScrapeResolvers.delete(createdTabId);
+        chrome.tabs.remove(createdTabId).catch(() => {});
+      }
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: 'timeout' }), TELLA_SCRAPE_TIMEOUT_MS);
+    chrome.tabs.create({ url, active: false }).then((tab) => {
+      createdTabId = tab.id;
+      tellaScrapeResolvers.set(createdTabId, finish);
+      const onUpd = (tabId, info) => {
+        if (tabId === createdTabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(onUpd);
+          chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] })
+            .catch((e) => finish({ ok: false, error: 'inject failed: ' + e.message }));
+        }
+      };
+      chrome.tabs.onUpdated.addListener(onUpd);
+    }).catch((e) => finish({ ok: false, error: 'tab create failed: ' + e.message }));
+  });
+}
+
+// content.js posts 'done'/'error' from the scrape tab — resolve the matching job.
+chrome.runtime.onMessage.addListener((request, sender) => {
+  if (!sender.tab) return;
+  const resolve = tellaScrapeResolvers.get(sender.tab.id);
+  if (!resolve) return; // not one of our scrape tabs (batch flow handles its own)
+  if (request.action === 'done') {
+    resolve({ ok: true, plainText: request.plainText || request.text || '', title: request.title || '' });
+  } else if (request.action === 'error') {
+    resolve({ ok: false, error: request.message || 'no transcript yet' });
+  }
+});
+
+// ----- step 1: upload the Tella video to YouTube via the backend -----
+async function runTellaUpload(jobId) {
+  const jobs = await getTellaJobs();
+  const job = jobs[jobId];
+  if (!job) return;
+  try {
+    await patchTellaJob(jobId, { lastMessage: 'Uploading to YouTube…' });
+    await broadcastTella();
+    const res = await fetch(`${TELLA_BACKEND}/upload`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tellaUrl: job.tellaUrl }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Upload failed');
+    const videoId = extractYtId(data.youtubeUrl);
+    if (!videoId) throw new Error('Could not read the YouTube video id from the upload.');
+    await patchTellaJob(jobId, {
+      stage: 'waiting', youtubeUrl: data.youtubeUrl, videoId, title: data.title || '',
+      attempts: 0, lastMessage: 'Uploaded. Waiting for YouTube to generate the transcript…',
+    });
+    await broadcastTella();
+    ensureTellaAlarm();
+  } catch (e) {
+    await patchTellaJob(jobId, { stage: 'failed', error: e.message });
+    await broadcastTella();
+  }
+}
+
+// ----- step 3: forward transcript to the Council via the backend -----
+async function runTellaCouncil(jobId) {
+  const jobs = await getTellaJobs();
+  const job = jobs[jobId];
+  if (!job) return;
+  try {
+    const res = await fetch(`${TELLA_BACKEND}/followup`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transcript: job.transcript, prospectName: job.prospectName, lang: job.lang }),
+    });
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'Council failed');
+    await patchTellaJob(jobId, {
+      stage: 'done', move: data.move, resultProspectName: data.prospectName || job.prospectName,
+      lastMessage: 'Done — follow-up ready.',
+    });
+  } catch (e) {
+    await patchTellaJob(jobId, { stage: 'failed', error: 'Council error: ' + e.message });
+  }
+  await broadcastTella();
+}
+
+// ----- step 2: poll waiting jobs for their transcript (alarm-driven) -----
+async function pollTellaJobs() {
+  const jobs = await getTellaJobs();
+  const waiting = Object.values(jobs).filter((j) => j.stage === 'waiting');
+  if (!waiting.length) { chrome.alarms.clear(TELLA_ALARM); return; }
+
+  for (const job of waiting) {
+    const attempts = (job.attempts || 0) + 1;
+    await patchTellaJob(job.id, { attempts, lastMessage: `Checking for transcript (try ${attempts})…` });
+    await broadcastTella();
+
+    const r = await scrapeYoutube(job.videoId);
+    if (r.ok && r.plainText && r.plainText.length > 20) {
+      await patchTellaJob(job.id, { stage: 'council', transcript: r.plainText, lastMessage: 'Transcript ready — asking the Council…' });
+      await broadcastTella();
+      await runTellaCouncil(job.id);
+    } else if (attempts >= (job.maxAttempts || TELLA_MAX_ATTEMPTS)) {
+      await patchTellaJob(job.id, { stage: 'failed', error: 'Transcript still not available after many tries — YouTube may not have generated captions for this video.' });
+      await broadcastTella();
+    } else {
+      await patchTellaJob(job.id, { lastMessage: `No transcript yet — retrying in 5 min (try ${attempts}).` });
+      await broadcastTella();
+    }
+  }
+
+  const after = await getTellaJobs();
+  if (Object.values(after).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
+  else chrome.alarms.clear(TELLA_ALARM);
+}
+
+// ----- start jobs from the popup -----
+async function startTellaJobs(items) {
+  const jobs = await getTellaJobs();
+  const newIds = [];
+  for (const it of items) {
+    const id = 'tj_' + Date.now() + '_' + Math.random().toString(16).slice(2, 8);
+    jobs[id] = {
+      id, tellaUrl: it.tellaUrl, prospectName: it.prospectName || '', lang: it.lang || 'bn',
+      stage: 'uploading', attempts: 0, maxAttempts: TELLA_MAX_ATTEMPTS,
+      created: Date.now(), updated: Date.now(), lastMessage: 'Queued…',
+    };
+    newIds.push(id);
+  }
+  await setTellaJobs(jobs);
+  await broadcastTella();
+  // Uploads run one at a time (YouTube quota + avoid hammering the backend).
+  for (const id of newIds) await runTellaUpload(id);
+}
+
+// ----- alarm + popup message routing -----
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === TELLA_ALARM) pollTellaJobs();
+});
+
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'startTella') {
+    startTellaJobs(request.items || []);
+    return;
+  }
+  if (request.action === 'getTellaState') {
+    getTellaJobs().then((jobs) => sendResponse({ jobs: Object.values(jobs).sort((a, b) => b.created - a.created) }));
+    return true; // async response
+  }
+  if (request.action === 'clearTellaDone') {
+    getTellaJobs().then(async (jobs) => {
+      for (const id of Object.keys(jobs)) {
+        if (jobs[id].stage === 'done' || jobs[id].stage === 'failed') delete jobs[id];
+      }
+      await setTellaJobs(jobs);
+      await broadcastTella();
+    });
+    return;
+  }
+});
+
+// On service-worker startup, resume polling if any jobs are still waiting.
+getTellaJobs().then((jobs) => {
+  if (Object.values(jobs).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
+});

@@ -204,9 +204,14 @@
         }
       });
 
+      // Plain spoken text (no timestamps/header) — used when forwarding to
+      // The Closer's Council so it reads a clean transcript.
+      const plainText = transcriptLines.map(l => l.text).join(' ').replace(/\s+/g, ' ').trim();
+
       chrome.runtime.sendMessage({
         action: 'done',
         text: fullText,
+        plainText: plainText,
         lines: transcriptLines.length,
         videoId: videoId,
         title: videoTitle,
