@@ -529,10 +529,78 @@ p {
 }
 
 /* Tella -> Council mode */
-.tella-label { display:block; font-size:11px; color:#9aa3b2; margin:10px 0 4px; }
-.tella-opt { color:#6b7280; font-weight:normal; }
-.tella-input, .tella-textarea-sm {
-  width:100%; box-sizing:border-box; padding:8px; border-radius:6px;
-  border:1px solid #333; background:#1a1a1a; color:#fff; font-family:inherit; font-size:13px;
+#tellaMode { text-align: left; }
+#tellaMode > p { text-align: center; }
+
+.tella-label {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ddd;
+  margin: 16px 0 6px;
+  text-align: left;
 }
-.tella-textarea-sm { min-height:48px; resize:vertical; }
+.tella-opt { color: #777; font-weight: 400; font-size: 11px; }
+
+/* Inputs/textareas/select — match the Batch/Names look (#111 fields) */
+#tellaUrls,
+#tellaProspect,
+#tellaNotes,
+#tellaSituation,
+#tellaLang {
+  width: 100%;
+  box-sizing: border-box;
+  background: #111;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 10px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+}
+#tellaUrls,
+#tellaNotes,
+#tellaSituation { resize: vertical; }
+#tellaUrls {
+  min-height: 58px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+#tellaNotes,
+#tellaSituation { min-height: 66px; }
+#tellaLang { cursor: pointer; }
+
+#tellaUrls:focus,
+#tellaProspect:focus,
+#tellaNotes:focus,
+#tellaSituation:focus,
+#tellaLang:focus {
+  outline: none;
+  border-color: #ff0000;
+}
+
+#tellaMode .batch-buttons { margin-top: 18px; }
+
+/* Primary action — same red gradient as Scrape buttons */
+#tellaRunBtn {
+  flex: 1;
+  background: linear-gradient(135deg, #ff0000 0%, #aa0000 100%);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 12px 16px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  box-shadow: 0 4px 12px rgba(255, 0, 0, 0.3);
+}
+#tellaRunBtn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(255, 0, 0, 0.4);
+}
+#tellaRunBtn:active { transform: translateY(1px); }
+
+#tellaStatus { text-align: center; }
+#tellaResults { margin-top: 14px; }
