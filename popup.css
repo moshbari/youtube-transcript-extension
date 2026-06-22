@@ -618,3 +618,18 @@ p {
 }
 .batch-council-copy { margin-top: 6px; }
 .batch-council-err { margin-top: 6px; font-size: 11px; color: #ff8888; }
+
+/* Batch → Council: full-width language field + aligned toggle row */
+.batch-council-row { width: 100%; }
+#batchLang {
+  width: 100%;
+  box-sizing: border-box;
+  background: #111;
+  color: #eee;
+  border: 1px solid #333;
+  border-radius: 8px;
+  padding: 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+#batchLang:focus { outline: none; border-color: #ff0000; }
