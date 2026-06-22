@@ -148,16 +148,32 @@
         fullText += `${line.timestamp} - ${line.text}\n`;
       }
 
-      // Download the .txt file
-      const blob = new Blob([fullText], { type: 'text/plain' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `${videoId}_transcript.txt`;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
+      // Build a filesystem-safe filename: "Title - VIDEOID.txt"
+      // Strip filesystem-illegal chars and a few extras (brackets, braces)
+      // that Chrome's downloads filename sanitizer has been known to choke
+      // on, collapse whitespace, drop trailing dots/spaces (Windows
+      // quirk), and cap length so "Title - VIDEOID.txt" stays under
+      // typical 255-byte path limits.
+      const safeTitle = (videoTitle || '')
+        .replace(/[<>:"/\\|?*\x00-\x1F\[\]\{\}]/g, '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/[. ]+$/, '')
+        .slice(0, 150) || 'youtube';
+      const filename = `${safeTitle} - ${videoId}.txt`;
+
+      // Hand the raw text + filename to the service worker. It routes
+      // the download through the offscreen document, which uses
+      // <a download>.click() in a page context — the only path we've
+      // found that reliably honors the filename across Chrome versions
+      // while still bypassing YouTube's per-origin multi-download gate.
+      if (!window.__tellaScrape) {
+        chrome.runtime.sendMessage({
+          action: 'download',
+          text: fullText,
+          filename
+        });
+      }
 
       // Save transcript data to chrome.storage.local for the popup to display
       chrome.storage.local.set({
@@ -170,9 +186,12 @@
         }
       });
 
+      const plainText = transcriptLines.map(l => l.text).join(' ').replace(/\s+/g, ' ').trim();
+
       chrome.runtime.sendMessage({
         action: 'done',
         text: fullText,
+        plainText: plainText,
         lines: transcriptLines.length,
         videoId: videoId,
         title: videoTitle,

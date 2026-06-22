@@ -1,7 +1,7 @@
 # Chrome Web Store — Submission Pack
 
 Everything below is copy-paste ready for the Chrome Web Store dashboard.
-Upload file: **yt-transcript-scraper-v1.4.zip** (in this folder).
+Upload file: **yt-transcript-scraper-v1.7.zip** (in this folder).
 
 ---
 
@@ -19,13 +19,19 @@ Scrape the full transcript of any YouTube video or Short with one click. Save as
 
 **Detailed description**
 ```
-YT Transcript Scraper grabs the complete transcript of any YouTube video — including Shorts — with a single click.
+YT Transcript Scraper grabs the complete transcript of any YouTube video — including Shorts — with a single click, and helps creators find their own video links by title.
 
 WHAT IT DOES
 • Click the toolbar icon on any YouTube video, then "Scrape Transcript"
 • The full timestamped transcript appears right in the popup
 • A .txt copy (with the video title and URL) downloads automatically
 • One "Copy All" button puts the whole transcript on your clipboard
+
+FIND YOUR VIDEO LINKS BY TITLE
+• Open YouTube Studio and load your video list
+• Paste a list of video names and click "Find Links"
+• The extension matches each name to its video and shows the link
+• Copy every found link at once — or use "Copy titles + links" to copy each title and its link together (one per line, with a blank line between each), perfect for sharing a clean list with your team
 
 WORKS ON SHORTS
 YouTube Shorts don't show a transcript panel. This extension automatically re-opens the same video in the standard player, scrapes it, and saves the result — no manual steps.
@@ -34,9 +40,10 @@ GREAT FOR
 • Feeding transcripts into ChatGPT, Claude, or other AI tools for summaries
 • Research, note-taking, and building a searchable archive
 • Translating, quoting, or repurposing video content
+• Quickly pulling up the right video links to share with collaborators
 
 PRIVACY
-Everything happens locally in your browser. The extension only runs on youtube.com, never collects or transmits your data, and saves transcripts only to your own computer.
+Everything happens locally in your browser. The extension only runs on youtube.com and studio.youtube.com, never collects or transmits your data, and saves transcripts only to your own computer.
 ```
 
 **Category:** Productivity
@@ -56,6 +63,7 @@ Everything happens locally in your browser. The extension only runs on youtube.c
 | **alarms** | Used internally to schedule short retries while the YouTube transcript panel finishes loading. |
 | **offscreen** | Used to reliably trigger the .txt file download from a stable page context (via a generated link, not the downloads API). |
 | **Host permission: youtube.com** | The extension only operates on YouTube. This restricts it so it cannot access any other website. |
+| **Host permission: studio.youtube.com** | Used by the "Names → Links" feature: when the user is on their own YouTube Studio Content page, the extension reads the list of their videos (title and link) so it can find the YouTube URL for videos the user names. Only runs on the user's own Studio page, reads only their own video list, and sends nothing off the device. |
 
 **Single purpose** (paste into the "Single purpose" box)
 ```

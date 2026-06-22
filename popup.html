@@ -7,19 +7,109 @@
 <body>
   <div class="container">
     <h2>YT Scraper</h2>
-    <p>Get the full transcript of this video with a single click.</p>
-    <button id="scrapeBtn">Scrape Transcript</button>
-    <div id="status"></div>
 
-    <!-- Transcript viewer (hidden until data exists) -->
-    <div id="transcriptViewer" class="transcript-viewer" style="display:none;">
-      <div class="transcript-header">
-        <div id="videoTitle" class="video-title"></div>
-        <a id="videoUrl" class="video-url" target="_blank" rel="noopener"></a>
-      </div>
-      <button id="copyBtn" class="copy-btn">Copy All</button>
-      <div id="transcriptContent" class="transcript-content"></div>
+    <!-- Mode tabs -->
+    <div class="mode-tabs">
+      <button class="mode-tab active" data-mode="single">Current Video</button>
+      <button class="mode-tab" data-mode="batch">Batch URLs</button>
+      <button class="mode-tab" data-mode="names">Names → Links</button>
+      <button class="mode-tab" data-mode="tella">Tella → Council</button>
     </div>
+
+    <!-- Single video mode -->
+    <div id="singleMode" class="mode-panel active">
+      <p>Get the full transcript of this video with a single click.</p>
+      <button id="scrapeBtn">Scrape Transcript</button>
+      <div id="status"></div>
+
+      <!-- Transcript viewer (hidden until data exists) -->
+      <div id="transcriptViewer" class="transcript-viewer" style="display:none;">
+        <div class="transcript-header">
+          <div id="videoTitle" class="video-title"></div>
+          <a id="videoUrl" class="video-url" target="_blank" rel="noopener"></a>
+        </div>
+        <button id="copyBtn" class="copy-btn">Copy All</button>
+        <div id="transcriptContent" class="transcript-content"></div>
+      </div>
+    </div>
+
+    <!-- Batch mode -->
+    <div id="batchMode" class="mode-panel">
+      <p>Paste YouTube URLs (one per line). They'll be scraped one by one — leave it running.</p>
+      <textarea id="batchUrls" placeholder="https://www.youtube.com/watch?v=...&#10;https://youtu.be/...&#10;https://www.youtube.com/shorts/..."></textarea>
+      <div class="batch-meta-row">
+        <div id="batchUrlCount" class="batch-url-count"></div>
+        <button id="batchClearBtn" class="batch-clear-btn" title="Clear all URLs">Clear</button>
+      </div>
+      <div class="batch-buttons">
+        <button id="batchScrapeBtn">Scrape All</button>
+        <button id="batchCancelBtn" class="cancel-btn" style="display:none;">Cancel</button>
+      </div>
+      <div id="batchStatus" class="batch-status"></div>
+
+      <!-- Progress section -->
+      <div id="batchProgress" class="batch-progress" style="display:none;">
+        <div class="batch-progress-bar"><div id="batchProgressFill" class="batch-progress-fill"></div></div>
+        <div id="batchProgressText" class="batch-progress-text"></div>
+        <div id="batchResults" class="batch-results"></div>
+      </div>
+    </div>
+
+    <!-- Names → Links mode -->
+    <div id="namesMode" class="mode-panel">
+      <p>Find the YouTube links for your own videos by name. <b>Paste your names below first</b>, then open <b>YouTube&nbsp;Studio</b> and click <b>Load</b>. The scan runs inside the Studio tab, so it's fine to click away — this popup closes (Chrome does that automatically), but the scan keeps going. Reopen it any time to see progress or your links. Keep the Studio tab open.</p>
+
+      <div class="lib-btn-row">
+        <button id="loadLibBtn">Load &amp; find my names in Studio</button>
+        <button id="stopLibBtn" class="batch-clear-btn" style="display:none;">Stop</button>
+      </div>
+      <div id="libStatus" class="batch-status"></div>
+
+      <textarea id="namesInput" placeholder="One video name per line, e.g.&#10;My first welcome video&#10;Day 3 - Q&amp;A call&#10;Launch webinar"></textarea>
+      <div class="batch-meta-row">
+        <div id="namesCount" class="batch-url-count"></div>
+        <button id="namesClearBtn" class="batch-clear-btn" title="Clear all names">Clear</button>
+      </div>
+
+      <button id="matchBtn">Find Links</button>
+
+      <div id="namesResultsWrap" class="names-results-wrap" style="display:none;">
+        <button id="copyLinksBtn" class="copy-btn">Copy all found links</button>
+        <button id="copyTitlesLinksBtn" class="copy-btn">Copy titles + links</button>
+        <div id="namesResults" class="batch-results"></div>
+      </div>
+    </div>
+    <!-- Tella -> Council mode -->
+    <div id="tellaMode" class="mode-panel">
+      <p>Paste a Tella call link. It uploads to YouTube, grabs the transcript automatically (retrying every 5 min until it's ready), then gets your follow-up from The Closer's Council. Leave it running.</p>
+
+      <label class="tella-label">Tella video link</label>
+      <textarea id="tellaUrls" placeholder="https://www.tella.tv/video/...&#10;(one per line)"></textarea>
+
+      <label class="tella-label">Prospect name <span class="tella-opt">optional — empty lets the Council name it</span></label>
+      <input id="tellaProspect" type="text" class="tella-input" placeholder="e.g. Rumena" />
+
+      <label class="tella-label">What you know about them <span class="tella-opt">optional — niche, what you're selling. Empty = the video title</span></label>
+      <textarea id="tellaNotes" class="tella-textarea-sm" placeholder="e.g. Rahim, 26, hates his job in Dubai, wants first online income but worried about price."></textarea>
+
+      <label class="tella-label">Where things stand right now <span class="tella-opt">optional — recommended for a good first answer</span></label>
+      <textarea id="tellaSituation" class="tella-textarea-sm" placeholder="e.g. This was a call 2 days ago; he went quiet, I need to reopen warmly."></textarea>
+
+      <label class="tella-label">Language</label>
+      <select id="tellaLang" class="tella-input">
+        <option value="bn" selected>Bengali</option>
+        <option value="en">English</option>
+        <option value="">Auto-detect</option>
+      </select>
+
+      <div class="batch-buttons">
+        <button id="tellaRunBtn">Run pipeline</button>
+        <button id="tellaClearBtn" class="cancel-btn">Clear finished</button>
+      </div>
+      <div id="tellaStatus" class="batch-status"></div>
+      <div id="tellaResults" class="batch-results"></div>
+    </div>
+
   </div>
   <script src="popup.js"></script>
 </body>
