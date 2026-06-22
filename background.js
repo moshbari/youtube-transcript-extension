@@ -483,21 +483,21 @@ async function runTellaUpload(jobId) {
   }
 }
 
-// ----- step 3: forward transcript to the Council via the backend -----
-async function runTellaCouncil(jobId) {
+// ----- step 3a: kick off the Council run (returns fast with a jobId) -----
+async function startTellaCouncil(jobId) {
   const jobs = await getTellaJobs();
   const job = jobs[jobId];
   if (!job) return;
   try {
-    const res = await fetch(`${TELLA_BACKEND}/followup`, {
+    const res = await fetch(`${TELLA_BACKEND}/followup/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transcript: job.transcript, prospectName: job.prospectName, lang: job.lang }),
     });
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || 'Council failed');
+    if (!data.ok || !data.jobId) throw new Error(data.error || 'Could not start the Council run.');
     await patchTellaJob(jobId, {
-      stage: 'done', move: data.move, resultProspectName: data.prospectName || job.prospectName,
-      lastMessage: 'Done — follow-up ready.',
+      stage: 'council', councilJobId: data.jobId, councilPolls: 0,
+      lastMessage: 'The Council is writing your follow-up…',
     });
   } catch (e) {
     await patchTellaJob(jobId, { stage: 'failed', error: 'Council error: ' + e.message });
@@ -505,22 +505,54 @@ async function runTellaCouncil(jobId) {
   await broadcastTella();
 }
 
-// ----- step 2: poll waiting jobs for their transcript (alarm-driven) -----
+// ----- step 3b: poll an in-progress Council run (one quick check) -----
+async function pollTellaCouncil(job) {
+  const polls = (job.councilPolls || 0) + 1;
+  await patchTellaJob(job.id, { councilPolls: polls });
+  try {
+    const res = await fetch(`${TELLA_BACKEND}/followup/status/${job.councilJobId}`);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || 'status error');
+    if (data.done) {
+      if (data.failed || !data.move) {
+        await patchTellaJob(job.id, { stage: 'failed', error: data.error || 'The Council run failed.' });
+      } else {
+        await patchTellaJob(job.id, {
+          stage: 'done', move: data.move,
+          resultProspectName: data.prospectName || job.prospectName,
+          lastMessage: 'Done — follow-up ready.',
+        });
+      }
+    } else {
+      await patchTellaJob(job.id, { lastMessage: `The Council is still working… (check ${polls})` });
+    }
+  } catch (e) {
+    if (polls >= 40) await patchTellaJob(job.id, { stage: 'failed', error: 'Council polling failed: ' + e.message });
+  }
+  await broadcastTella();
+}
+
+// ----- step 2: alarm tick — scrape waiting jobs, poll in-progress Council jobs -----
 async function pollTellaJobs() {
   const jobs = await getTellaJobs();
-  const waiting = Object.values(jobs).filter((j) => j.stage === 'waiting');
-  if (!waiting.length) { chrome.alarms.clear(TELLA_ALARM); return; }
+  const active = Object.values(jobs).filter((j) => j.stage === 'waiting' || j.stage === 'council');
+  if (!active.length) { chrome.alarms.clear(TELLA_ALARM); return; }
 
-  for (const job of waiting) {
+  for (const job of active) {
+    if (job.stage === 'council') {
+      await pollTellaCouncil(job);
+      continue;
+    }
+    // stage === 'waiting' : try to scrape the YouTube transcript
     const attempts = (job.attempts || 0) + 1;
     await patchTellaJob(job.id, { attempts, lastMessage: `Checking for transcript (try ${attempts})…` });
     await broadcastTella();
 
     const r = await scrapeYoutube(job.videoId);
     if (r.ok && r.plainText && r.plainText.length > 20) {
-      await patchTellaJob(job.id, { stage: 'council', transcript: r.plainText, lastMessage: 'Transcript ready — asking the Council…' });
+      await patchTellaJob(job.id, { transcript: r.plainText, lastMessage: 'Transcript ready — starting the Council…' });
       await broadcastTella();
-      await runTellaCouncil(job.id);
+      await startTellaCouncil(job.id);
     } else if (attempts >= (job.maxAttempts || TELLA_MAX_ATTEMPTS)) {
       await patchTellaJob(job.id, { stage: 'failed', error: 'Transcript still not available after many tries — YouTube may not have generated captions for this video.' });
       await broadcastTella();
@@ -531,7 +563,7 @@ async function pollTellaJobs() {
   }
 
   const after = await getTellaJobs();
-  if (Object.values(after).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
+  if (Object.values(after).some((j) => j.stage === 'waiting' || j.stage === 'council')) ensureTellaAlarm();
   else chrome.alarms.clear(TELLA_ALARM);
 }
 
@@ -580,7 +612,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 });
 
-// On service-worker startup, resume polling if any jobs are still waiting.
+// On service-worker startup, resume polling if any jobs are still in flight.
 getTellaJobs().then((jobs) => {
-  if (Object.values(jobs).some((j) => j.stage === 'waiting')) ensureTellaAlarm();
+  if (Object.values(jobs).some((j) => j.stage === 'waiting' || j.stage === 'council')) ensureTellaAlarm();
 });
