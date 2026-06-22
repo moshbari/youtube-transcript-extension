@@ -412,3 +412,12 @@ p {
 .transcript-text {
   color: #ddd;
 }
+
+/* Tella -> Council mode */
+.tella-label { display:block; font-size:11px; color:#9aa3b2; margin:10px 0 4px; }
+.tella-opt { color:#6b7280; font-weight:normal; }
+.tella-input, .tella-textarea-sm {
+  width:100%; box-sizing:border-box; padding:8px; border-radius:6px;
+  border:1px solid #333; background:#1a1a1a; color:#fff; font-family:inherit; font-size:13px;
+}
+.tella-textarea-sm { min-height:48px; resize:vertical; }

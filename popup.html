@@ -56,13 +56,26 @@
     <!-- Tella -> Council mode -->
     <div id="tellaMode" class="mode-panel">
       <p>Paste a Tella call link. It uploads to YouTube, grabs the transcript automatically (retrying every 5 min until it's ready), then gets your follow-up from The Closer's Council. Leave it running.</p>
+
+      <label class="tella-label">Tella video link</label>
       <textarea id="tellaUrls" placeholder="https://www.tella.tv/video/...&#10;(one per line)"></textarea>
-      <input id="tellaProspect" type="text" placeholder="Prospect name (optional)" style="width:100%;box-sizing:border-box;margin-top:8px;padding:8px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#fff;" />
-      <select id="tellaLang" style="width:100%;box-sizing:border-box;margin-top:8px;padding:8px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#fff;">
+
+      <label class="tella-label">Prospect name <span class="tella-opt">optional — empty uses the video title's prospect</span></label>
+      <input id="tellaProspect" type="text" class="tella-input" placeholder="e.g. Rumena" />
+
+      <label class="tella-label">What you know about them <span class="tella-opt">optional — niche, what you're selling. Empty = the video title</span></label>
+      <textarea id="tellaNotes" class="tella-textarea-sm" placeholder="e.g. Rahim, 26, hates his job in Dubai, wants first online income but worried about price."></textarea>
+
+      <label class="tella-label">Where things stand right now <span class="tella-opt">optional — recommended for a good first answer</span></label>
+      <textarea id="tellaSituation" class="tella-textarea-sm" placeholder="e.g. This was a call 2 days ago; he went quiet, I need to reopen warmly."></textarea>
+
+      <label class="tella-label">Language</label>
+      <select id="tellaLang" class="tella-input">
         <option value="bn" selected>Bengali</option>
         <option value="en">English</option>
         <option value="">Auto-detect</option>
       </select>
+
       <div class="batch-buttons">
         <button id="tellaRunBtn">Run pipeline</button>
         <button id="tellaClearBtn" class="cancel-btn">Clear finished</button>

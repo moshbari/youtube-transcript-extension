@@ -345,9 +345,11 @@ chrome.runtime.onMessage.addListener((request) => {
 // =====================================================================
 //  Tella -> Council mode
 // =====================================================================
-const tellaUrlsEl     = document.getElementById('tellaUrls');
-const tellaProspectEl = document.getElementById('tellaProspect');
-const tellaLangEl     = document.getElementById('tellaLang');
+const tellaUrlsEl      = document.getElementById('tellaUrls');
+const tellaProspectEl  = document.getElementById('tellaProspect');
+const tellaNotesEl     = document.getElementById('tellaNotes');
+const tellaSituationEl = document.getElementById('tellaSituation');
+const tellaLangEl      = document.getElementById('tellaLang');
 const tellaRunBtn     = document.getElementById('tellaRunBtn');
 const tellaClearBtn   = document.getElementById('tellaClearBtn');
 const tellaStatusEl   = document.getElementById('tellaStatus');
@@ -379,6 +381,7 @@ function renderTellaJobs(jobs) {
       const mid = 'tmsg_' + j.id;
       html += `<div style="margin-top:8px;background:#0f1d15;border:1px solid #244031;border-radius:8px;padding:10px;white-space:pre-wrap;font-size:13px;line-height:1.5;" id="${mid}">${escapeHtml(pm.text)}</div>`;
       html += `<button class="copy-btn tella-copy" data-target="${mid}" style="margin-top:6px;">Copy message</button>`;
+      html += ` <a href="https://thecloserscouncil.99dfy.com" target="_blank" rel="noopener" class="copy-btn" style="margin-top:6px;text-decoration:none;display:inline-block;">Open in The Closer's Council</a>`;
       if (j.resultProspectName) html += `<div style="font-size:11px;color:#9aa3b2;margin-top:4px;">🗂️ Saved to Council as: <strong>${escapeHtml(j.resultProspectName)}</strong></div>`;
     }
     html += '</div>';
@@ -402,8 +405,10 @@ if (tellaRunBtn) {
     const links = (tellaUrlsEl.value || '').split('\n').map((s) => s.trim()).filter(Boolean);
     if (!links.length) { tellaStatusEl.textContent = 'Paste at least one Tella link.'; tellaStatusEl.style.color = '#ff8888'; return; }
     const prospectName = (tellaProspectEl.value || '').trim();
+    const notes = (tellaNotesEl.value || '').trim();
+    const situation = (tellaSituationEl.value || '').trim();
     const lang = tellaLangEl.value;
-    const items = links.map((url) => ({ tellaUrl: url, prospectName, lang }));
+    const items = links.map((url) => ({ tellaUrl: url, prospectName, notes, situation, lang }));
     chrome.runtime.sendMessage({ action: 'startTella', items });
     tellaStatusEl.textContent = `Started ${items.length} job${items.length === 1 ? '' : 's'}. You can close this popup — it keeps running.`;
     tellaStatusEl.style.color = '#00ff88';

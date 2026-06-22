@@ -491,7 +491,14 @@ async function startTellaCouncil(jobId) {
   try {
     const res = await fetch(`${TELLA_BACKEND}/followup/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ transcript: job.transcript, prospectName: job.prospectName, lang: job.lang }),
+      body: JSON.stringify({
+        transcript: job.transcript,
+        prospectName: job.prospectName,
+        // Empty "what you know about them" defaults to the video title.
+        notes: job.notes || job.title || '',
+        situation: job.situation || '',
+        lang: job.lang,
+      }),
     });
     const data = await res.json();
     if (!data.ok || !data.jobId) throw new Error(data.error || 'Could not start the Council run.');
@@ -574,7 +581,8 @@ async function startTellaJobs(items) {
   for (const it of items) {
     const id = 'tj_' + Date.now() + '_' + Math.random().toString(16).slice(2, 8);
     jobs[id] = {
-      id, tellaUrl: it.tellaUrl, prospectName: it.prospectName || '', lang: it.lang || 'bn',
+      id, tellaUrl: it.tellaUrl, prospectName: it.prospectName || '',
+      notes: it.notes || '', situation: it.situation || '', lang: it.lang || 'bn',
       stage: 'uploading', attempts: 0, maxAttempts: TELLA_MAX_ATTEMPTS,
       created: Date.now(), updated: Date.now(), lastMessage: 'Queued…',
     };
