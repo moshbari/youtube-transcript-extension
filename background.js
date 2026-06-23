@@ -515,11 +515,66 @@ chrome.runtime.onMessage.addListener((request, sender) => {
 });
 
 // ----- step 1: upload the Tella video to YouTube via the backend -----
+// --- Connect the user's own YouTube channel (so Tella uploads go to THEM) ---
+// Runs Google OAuth via launchWebAuthFlow against the tella-to-youtube backend,
+// which hands the refresh token back on the chromiumapp.org redirect fragment.
+// Token is stored locally and sent with each upload; the server never keeps it.
+function connectYouTube() {
+  return new Promise((resolve, reject) => {
+    const extRedirect = chrome.identity.getRedirectURL("yt");
+    const authUrl =
+      `${TELLA_BACKEND}/auth/youtube?mode=ext&ext_redirect=` + encodeURIComponent(extRedirect);
+    chrome.identity.launchWebAuthFlow({ url: authUrl, interactive: true }, async (redirectUrl) => {
+      if (chrome.runtime.lastError || !redirectUrl) {
+        reject(new Error(chrome.runtime.lastError?.message || "Connection cancelled."));
+        return;
+      }
+      const frag = redirectUrl.split("#")[1] || "";
+      const params = new URLSearchParams(frag);
+      const error = params.get("error");
+      if (error) { reject(new Error(error)); return; }
+      const refreshToken = params.get("refreshToken");
+      const email = params.get("email") || "";
+      if (!refreshToken) { reject(new Error("No token returned from Google.")); return; }
+      await chrome.storage.local.set({ ytChannel: { refreshToken, email, at: Date.now() } });
+      resolve({ email });
+    });
+  });
+}
+
+async function getYtChannel() {
+  const { ytChannel } = await chrome.storage.local.get("ytChannel");
+  return ytChannel || null;
+}
+
+// Popup <-> background messages for the YouTube connection.
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (!request) return;
+  if (request.action === "ytConnect") {
+    connectYouTube()
+      .then((r) => sendResponse({ ok: true, email: r.email }))
+      .catch((e) => sendResponse({ ok: false, error: e.message }));
+    return true; // async
+  }
+  if (request.action === "ytStatus") {
+    getYtChannel().then((c) => sendResponse({ ok: true, connected: !!c?.refreshToken, email: c?.email || "" }));
+    return true; // async
+  }
+  if (request.action === "ytDisconnect") {
+    chrome.storage.local.remove("ytChannel").then(() => sendResponse({ ok: true }));
+    return true; // async
+  }
+});
+
 async function runTellaUpload(jobId) {
   const jobs = await getTellaJobs();
   const job = jobs[jobId];
   if (!job) return;
   try {
+    const channel = await getYtChannel();
+    if (!channel?.refreshToken) {
+      throw new Error('Connect your YouTube channel first (button at the top of the Tella tab).');
+    }
     await patchTellaJob(jobId, { lastMessage: 'Uploading to YouTube…' });
     await broadcastTella();
     // Start the upload in the background on the server; we poll for it on the
@@ -528,7 +583,8 @@ async function runTellaUpload(jobId) {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       // Pass the prospect name so the server can label the diarized transcript
       // ("Host: … / Farooq: …") instead of leaving it to the Council to guess.
-      body: JSON.stringify({ tellaUrl: job.tellaUrl, prospectName: job.prospectName || '' }),
+      // youtubeRefreshToken routes the upload to the USER's own channel.
+      body: JSON.stringify({ tellaUrl: job.tellaUrl, prospectName: job.prospectName || '', youtubeRefreshToken: channel.refreshToken }),
     });
     const data = await res.json();
     if (!data.ok || !data.uploadId) throw new Error(data.error || 'Could not start the upload.');

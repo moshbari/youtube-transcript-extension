@@ -87,7 +87,12 @@
     </div>
     <!-- Tella -> Council mode -->
     <div id="tellaMode" class="mode-panel">
-      <p>Paste a Tella call link. It uploads to YouTube, grabs the transcript automatically (retrying every 5 min until it's ready), then sends it to The Closer's Council. Open the Council to read the follow-up. Leave it running.</p>
+      <p>Paste a Tella call link. It uploads to <strong>your own</strong> YouTube channel, grabs the transcript automatically (retrying every 5 min until it's ready), then sends it to The Closer's Council. Open the Council to read the follow-up. Leave it running.</p>
+
+      <div id="ytConnBar" style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;border:1px solid rgba(0,0,0,0.12);border-radius:8px;padding:8px 10px;margin-bottom:10px;">
+        <span id="ytConnStatus" style="font-size:12px;opacity:.8;">Checking YouTube…</span>
+        <button id="ytConnBtn" type="button" class="cancel-btn" style="flex:0 0 auto;">Connect your YouTube</button>
+      </div>
 
       <label class="tella-label">Tella video link</label>
       <textarea id="tellaUrls" placeholder="https://www.tella.tv/video/...&#10;(one per line)"></textarea>

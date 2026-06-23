@@ -767,6 +767,35 @@ const tellaClearBtn   = document.getElementById('tellaClearBtn');
 const tellaStatusEl   = document.getElementById('tellaStatus');
 const tellaResultsEl  = document.getElementById('tellaResults');
 
+// --- Connect your own YouTube channel ---
+const ytConnStatusEl = document.getElementById('ytConnStatus');
+const ytConnBtn      = document.getElementById('ytConnBtn');
+let ytConnected = false;
+
+function renderYtConn(connected, email) {
+  ytConnected = !!connected;
+  if (!ytConnStatusEl) return;
+  if (connected) {
+    ytConnStatusEl.innerHTML = '✅ Connected' + (email ? ' as <strong>' + escapeHtml(email) + '</strong>' : '');
+    if (ytConnBtn) ytConnBtn.textContent = 'Switch';
+  } else {
+    ytConnStatusEl.textContent = 'Connect your YouTube so uploads go to your channel.';
+    if (ytConnBtn) ytConnBtn.textContent = 'Connect your YouTube';
+  }
+}
+if (ytConnBtn) {
+  ytConnBtn.addEventListener('click', () => {
+    if (ytConnStatusEl) ytConnStatusEl.textContent = 'Opening Google sign-in…';
+    chrome.runtime.sendMessage({ action: 'ytConnect' }, (r) => {
+      if (r && r.ok) renderYtConn(true, r.email);
+      else if (ytConnStatusEl) ytConnStatusEl.textContent = 'Connection failed: ' + ((r && r.error) || 'cancelled');
+    });
+  });
+}
+chrome.runtime.sendMessage({ action: 'ytStatus' }, (r) => {
+  if (r && r.ok) renderYtConn(r.connected, r.email);
+});
+
 const TELLA_STAGE_LABEL = {
   uploading: 'Uploading to YouTube',
   waiting: 'Waiting for transcript',
@@ -796,6 +825,7 @@ if (tellaRunBtn) {
   tellaRunBtn.addEventListener('click', () => {
     const links = (tellaUrlsEl.value || '').split('\n').map((s) => s.trim()).filter(Boolean);
     if (!links.length) { tellaStatusEl.textContent = 'Paste at least one Tella link.'; tellaStatusEl.style.color = '#ff8888'; return; }
+    if (!ytConnected) { tellaStatusEl.textContent = 'First connect your YouTube channel (button at the top).'; tellaStatusEl.style.color = '#ff8888'; return; }
     const prospectName = (tellaProspectEl.value || '').trim();
     const notes = (tellaNotesEl.value || '').trim();
     const situation = (tellaSituationEl.value || '').trim();
