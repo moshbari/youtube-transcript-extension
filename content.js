@@ -193,6 +193,7 @@
         text: fullText,
         plainText: plainText,
         lines: transcriptLines.length,
+        segments: transcriptLines, // [{ timestamp, text }] — used by the PullTranscript bridge
         videoId: videoId,
         title: videoTitle,
         url: videoUrl

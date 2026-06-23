@@ -435,8 +435,30 @@ function extractYtId(url) {
   if (m) return m[1];
   m = url.match(/[?&]v=([A-Za-z0-9_-]{11})/);
   if (m) return m[1];
+  m = url.match(/\/shorts\/([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
+  m = url.match(/\/embed\/([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
   return null;
 }
+
+// ----- PullTranscript web-app bridge -----
+// bridge.js (content script on pulltranscript.com) forwards scrape requests
+// here. We reuse the same background-tab scrape engine as the Tella flow and
+// hand back the timestamped segments. Kept as its own listener so the async
+// sendResponse (return true) doesn't interfere with the other listeners.
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (!request || request.action !== 'bridgeScrape') return;
+  const videoId = extractYtId(request.url || '');
+  if (!videoId) {
+    sendResponse({ ok: false, error: 'Could not find a YouTube video ID in that URL.' });
+    return;
+  }
+  scrapeYoutube(videoId)
+    .then((r) => sendResponse(r))
+    .catch((e) => sendResponse({ ok: false, error: (e && e.message) || 'Scrape failed' }));
+  return true; // keep the message channel open for the async response
+});
 
 // ----- open a YT watch page in the background and scrape via content.js -----
 const tellaScrapeResolvers = new Map(); // tabId -> resolve()
@@ -480,7 +502,13 @@ chrome.runtime.onMessage.addListener((request, sender) => {
   const resolve = tellaScrapeResolvers.get(sender.tab.id);
   if (!resolve) return; // not one of our scrape tabs (batch flow handles its own)
   if (request.action === 'done') {
-    resolve({ ok: true, plainText: request.plainText || request.text || '', title: request.title || '' });
+    resolve({
+      ok: true,
+      plainText: request.plainText || request.text || '',
+      text: request.text || '',
+      segments: request.segments || [],
+      title: request.title || '',
+    });
   } else if (request.action === 'error') {
     resolve({ ok: false, error: request.message || 'no transcript yet' });
   }
