@@ -498,7 +498,9 @@ async function runTellaUpload(jobId) {
     // alarm so the service worker sleeping mid-upload can't lose the result.
     const res = await fetch(`${TELLA_BACKEND}/upload/start`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tellaUrl: job.tellaUrl }),
+      // Pass the prospect name so the server can label the diarized transcript
+      // ("Host: … / Farooq: …") instead of leaving it to the Council to guess.
+      body: JSON.stringify({ tellaUrl: job.tellaUrl, prospectName: job.prospectName || '' }),
     });
     const data = await res.json();
     if (!data.ok || !data.uploadId) throw new Error(data.error || 'Could not start the upload.');
@@ -527,14 +529,30 @@ async function pollTellaUpload(job) {
     if (data.done) {
       if (data.succeeded && data.youtubeUrl) {
         const videoId = extractYtId(data.youtubeUrl);
-        await patchTellaJob(job.id, {
-          stage: 'waiting', youtubeUrl: data.youtubeUrl, videoId, title: data.title || job.title || '',
-          attempts: 0, lastMessage: 'Uploaded ✓ — waiting for YouTube to generate the transcript…',
-        });
+        const base = { youtubeUrl: data.youtubeUrl, videoId, title: data.title || job.title || '' };
+        if (data.diarizedTranscript && data.diarizedTranscript.trim().length > 20) {
+          // The server already produced a speaker-labelled transcript from the
+          // audio. Use it directly and skip the slow, unreliable wait for
+          // YouTube to generate (unlabelled) captions.
+          await patchTellaJob(job.id, {
+            ...base, stage: 'waiting', transcript: data.diarizedTranscript,
+            lastMessage: 'Speakers detected ✓ — sending to The Closer’s Council…',
+          });
+          await broadcastTella();
+          await sendTellaToCouncil(job.id);
+        } else {
+          // No diarized transcript (keys missing / one voice / failure) — fall
+          // back to scraping YouTube's captions on the alarm tick.
+          await patchTellaJob(job.id, {
+            ...base, stage: 'waiting', attempts: 0,
+            lastMessage: 'Uploaded ✓ — waiting for YouTube to generate the transcript…',
+          });
+          await broadcastTella();
+        }
       } else {
         await patchTellaJob(job.id, { stage: 'failed', error: data.error || 'Upload failed.' });
+        await broadcastTella();
       }
-      await broadcastTella();
     }
     // not done yet → leave as-is, check again next tick
   } catch (e) {
@@ -574,7 +592,14 @@ async function pollTellaJobs() {
 
   for (const job of active) {
     if (job.stage === 'uploading') { await pollTellaUpload(job); continue; }
-    // 'waiting' stage — only attempt a scrape ~every 5 min (the alarm itself ticks faster).
+    // 'waiting' stage. If we already have a transcript (a diarized one from the
+    // server, or one whose Council send got interrupted), don't scrape YouTube —
+    // just send it. Keeps the diarized path idempotent across worker restarts.
+    if (job.transcript && job.transcript.trim().length > 20) {
+      await sendTellaToCouncil(job.id);
+      continue;
+    }
+    // Otherwise only attempt a scrape ~every 5 min (the alarm itself ticks faster).
     if (job.lastScrapeAt && (Date.now() - job.lastScrapeAt) < 4.5 * 60 * 1000) continue;
     const attempts = (job.attempts || 0) + 1;
     await patchTellaJob(job.id, { attempts, lastScrapeAt: Date.now(), lastMessage: `Checking for transcript (try ${attempts})…` });
