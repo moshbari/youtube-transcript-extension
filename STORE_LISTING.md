@@ -1,7 +1,7 @@
 # Chrome Web Store — Submission Pack
 
 Everything below is copy-paste ready for the Chrome Web Store dashboard.
-Upload file: **yt-transcript-scraper-v1.7.zip** (in this folder).
+Upload file: **yt-transcript-scraper-v2.3.zip** (in this folder).
 
 ---
 
@@ -43,7 +43,7 @@ GREAT FOR
 • Quickly pulling up the right video links to share with collaborators
 
 PRIVACY
-Everything happens locally in your browser. The extension only runs on youtube.com and studio.youtube.com, never collects or transmits your data, and saves transcripts only to your own computer.
+Everything happens locally in your browser. The extension reads transcripts on YouTube, and — when you use it on its companion site PullTranscript.com — hands the transcript to that page at your request. It uses no remote code, collects no personal data, and stores transcripts only on your own computer.
 ```
 
 **Category:** Productivity
@@ -62,8 +62,10 @@ Everything happens locally in your browser. The extension only runs on youtube.c
 | **tabs** | Needed to open the standard YouTube watch page for Shorts (which lack a transcript panel) and to close that helper tab when done. |
 | **alarms** | Used internally to schedule short retries while the YouTube transcript panel finishes loading. |
 | **offscreen** | Used to reliably trigger the .txt file download from a stable page context (via a generated link, not the downloads API). |
-| **Host permission: youtube.com** | The extension only operates on YouTube. This restricts it so it cannot access any other website. |
+| **Host permission: youtube.com** | The extension's core feature runs on YouTube watch and Shorts pages to read and extract the transcript the user asked for. |
 | **Host permission: studio.youtube.com** | Used by the "Names → Links" feature: when the user is on their own YouTube Studio Content page, the extension reads the list of their videos (title and link) so it can find the YouTube URL for videos the user names. Only runs on the user's own Studio page, reads only their own video list, and sends nothing off the device. |
+| **Host permission: tellatotube.up.railway.app** | Used only by the optional "Tella → Council" feature: when the user starts that flow, the extension sends the Tella call link they provide to this backend to upload it to YouTube and retrieve a follow-up. Contacted only when the user explicitly starts that flow. |
+| **Host permission: pulltranscript.com** | Lets the companion web app PullTranscript.com request a YouTube transcript through the extension. When the user is on pulltranscript.com and submits a YouTube link, the page asks the extension to fetch that video's transcript (using the same on-device YouTube scraping as the popup) and hands the text back to the page. Runs only on pulltranscript.com, acts only on a YouTube link the user submits, and uses no remote code. |
 
 **Single purpose** (paste into the "Single purpose" box)
 ```
