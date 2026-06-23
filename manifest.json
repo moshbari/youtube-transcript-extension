@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Scraper",
-  "version": "2.5",
+  "version": "2.6",
   "description": "Scrape YouTube transcripts (single, batch, or by name), or run Tella calls end-to-end: upload to YouTube, auto-grab the transcript, and get a follow-up from The Closer's Council.",
   "permissions": [
     "activeTab",
@@ -33,7 +33,8 @@
     {
       "matches": [
         "https://pulltranscript.com/*",
-        "https://www.pulltranscript.com/*"
+        "https://www.pulltranscript.com/*",
+        "https://devrant.99dfy.com/*"
       ],
       "js": ["bridge.js"],
       "run_at": "document_idle"
@@ -44,6 +45,7 @@
     "https://studio.youtube.com/*",
     "https://tellatotube.up.railway.app/*",
     "https://pulltranscript.com/*",
-    "https://www.pulltranscript.com/*"
+    "https://www.pulltranscript.com/*",
+    "https://devrant.99dfy.com/*"
   ]
 }
