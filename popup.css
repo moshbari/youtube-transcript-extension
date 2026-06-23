@@ -7,6 +7,31 @@ body {
   color: #fff;
 }
 
+/* Header row: title + pop-out */
+.header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.pop-out-btn {
+  flex: 0 0 auto;
+  background: #2a2a2a;
+  color: #ccc;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 5px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.pop-out-btn:hover {
+  background: #3a3a3a;
+  color: #fff;
+  border-color: #ff0000;
+}
+
 /* Mode tabs */
 .mode-tabs {
   display: flex;

@@ -1,16 +1,47 @@
 // =====================================================================
+//  Pop out into a standalone window
+// =====================================================================
+// A normal extension popup closes the moment it loses focus (e.g. when you
+// click another tab to copy something). A standalone window stays open until
+// you close it, so you can fill the long Tella form by copy/pasting field by
+// field across tabs. The pop-out reuses the saved draft, so whatever you've
+// already typed in the popup carries straight over.
+const IS_POPOUT = new URLSearchParams(location.search).get('win') === '1';
+const popOutBtn = document.getElementById('popOutBtn');
+if (popOutBtn) {
+  if (IS_POPOUT) {
+    popOutBtn.style.display = 'none';
+  } else {
+    popOutBtn.addEventListener('click', () => {
+      const activeTab = document.querySelector('.mode-tab.active');
+      const mode = activeTab ? activeTab.dataset.mode : 'single';
+      chrome.windows.create({
+        url: chrome.runtime.getURL('popup.html?win=1&mode=' + encodeURIComponent(mode)),
+        type: 'popup',
+        width: 460,
+        height: 720,
+      });
+      window.close();
+    });
+  }
+}
+
+// =====================================================================
 //  Mode tab switching
 // =====================================================================
+function activateMode(mode) {
+  document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t.dataset.mode === mode));
+  document.getElementById('singleMode').classList.toggle('active', mode === 'single');
+  document.getElementById('batchMode').classList.toggle('active', mode === 'batch');
+  document.getElementById('namesMode').classList.toggle('active', mode === 'names');
+  document.getElementById('tellaMode').classList.toggle('active', mode === 'tella');
+}
 document.querySelectorAll('.mode-tab').forEach(tab => {
-  tab.addEventListener('click', () => {
-    const mode = tab.dataset.mode;
-    document.querySelectorAll('.mode-tab').forEach(t => t.classList.toggle('active', t === tab));
-    document.getElementById('singleMode').classList.toggle('active', mode === 'single');
-    document.getElementById('batchMode').classList.toggle('active', mode === 'batch');
-    document.getElementById('namesMode').classList.toggle('active', mode === 'names');
-    document.getElementById('tellaMode').classList.toggle('active', mode === 'tella');
-  });
+  tab.addEventListener('click', () => activateMode(tab.dataset.mode));
 });
+// When popped out into a window, open on the same tab the user was viewing.
+const _startMode = new URLSearchParams(location.search).get('mode');
+if (_startMode) activateMode(_startMode);
 
 // =====================================================================
 //  Single video flow (preserved from v1.3)
@@ -767,6 +798,38 @@ const tellaClearBtn   = document.getElementById('tellaClearBtn');
 const tellaStatusEl   = document.getElementById('tellaStatus');
 const tellaResultsEl  = document.getElementById('tellaResults');
 
+// --- Draft persistence ---------------------------------------------------
+// Chrome closes the popup whenever it loses focus (e.g. you click another tab
+// to copy text). Without this, everything typed here would vanish. We save the
+// form to storage on every keystroke and restore it when the popup reopens, so
+// you can paste field-by-field across tabs and never lose your work.
+const TELLA_DRAFT_KEY = 'tellaDraft';
+const tellaDraftEls = [tellaUrlsEl, tellaProspectEl, tellaNotesEl, tellaSituationEl, tellaLangEl];
+
+function saveTellaDraft() {
+  chrome.storage.local.set({ [TELLA_DRAFT_KEY]: {
+    urls: tellaUrlsEl.value,
+    prospect: tellaProspectEl.value,
+    notes: tellaNotesEl.value,
+    situation: tellaSituationEl.value,
+    lang: tellaLangEl.value,
+  } });
+}
+function clearTellaDraft() {
+  chrome.storage.local.remove(TELLA_DRAFT_KEY);
+}
+tellaDraftEls.forEach((el) => el && el.addEventListener('input', saveTellaDraft));
+if (tellaLangEl) tellaLangEl.addEventListener('change', saveTellaDraft);
+chrome.storage.local.get(TELLA_DRAFT_KEY, (r) => {
+  const d = r[TELLA_DRAFT_KEY];
+  if (!d) return;
+  if (d.urls)      tellaUrlsEl.value      = d.urls;
+  if (d.prospect)  tellaProspectEl.value  = d.prospect;
+  if (d.notes)     tellaNotesEl.value     = d.notes;
+  if (d.situation) tellaSituationEl.value = d.situation;
+  if (d.lang !== undefined && d.lang !== '') tellaLangEl.value = d.lang;
+});
+
 // --- Connect your own YouTube channel ---
 const ytConnStatusEl = document.getElementById('ytConnStatus');
 const ytConnBtn      = document.getElementById('ytConnBtn');
@@ -835,6 +898,7 @@ if (tellaRunBtn) {
     tellaStatusEl.textContent = `Started ${items.length} job${items.length === 1 ? '' : 's'}. You can close this popup — it keeps running.`;
     tellaStatusEl.style.color = '#00ff88';
     tellaUrlsEl.value = '';
+    clearTellaDraft();
   });
 }
 if (tellaClearBtn) {
