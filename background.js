@@ -468,6 +468,8 @@ function scrapeYoutube(videoId) {
     const url = `https://www.youtube.com/watch?v=${videoId}`;
     let settled = false;
     let createdTabId = null;
+    let returnToTabId = null;     // the tab the user was on — refocus it when done
+    let returnToWindowId = null;
     const finish = (result) => {
       if (settled) return; settled = true;
       clearTimeout(timer);
@@ -475,10 +477,29 @@ function scrapeYoutube(videoId) {
         tellaScrapeResolvers.delete(createdTabId);
         chrome.tabs.remove(createdTabId).catch(() => {});
       }
+      // Restore focus to wherever the user was before we stole it.
+      if (returnToTabId != null) {
+        chrome.tabs.update(returnToTabId, { active: true }).catch(() => {});
+        if (returnToWindowId != null) {
+          chrome.windows.update(returnToWindowId, { focused: true }).catch(() => {});
+        }
+      }
       resolve(result);
     };
     const timer = setTimeout(() => finish({ ok: false, error: 'timeout' }), TELLA_SCRAPE_TIMEOUT_MS);
-    chrome.tabs.create({ url, active: false }).then((tab) => {
+
+    // Remember the user's current tab, then open the watch page in the
+    // FOREGROUND. YouTube only mounts the transcript panel for a VISIBLE tab —
+    // a background tab (active:false) leaves the panel un-rendered, so the
+    // scrape used to fail with "Transcript panel did not appear." We open it
+    // active so the panel renders, scrape, then snap focus back to the user.
+    chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+      if (tabs && tabs[0]) {
+        returnToTabId = tabs[0].id;
+        returnToWindowId = tabs[0].windowId;
+      }
+      return chrome.tabs.create({ url, active: true });
+    }).then((tab) => {
       createdTabId = tab.id;
       tellaScrapeResolvers.set(createdTabId, finish);
       const onUpd = (tabId, info) => {

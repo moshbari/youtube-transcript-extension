@@ -47,7 +47,7 @@
 
     // Wait for the panel to appear
     let retries = 0;
-    while (!document.querySelector('transcript-segment-view-model, ytd-transcript-segment-renderer') && retries < 10) {
+    while (!document.querySelector('transcript-segment-view-model, ytd-transcript-segment-renderer') && retries < 20) {
       await sleep(500);
       retries++;
     }
