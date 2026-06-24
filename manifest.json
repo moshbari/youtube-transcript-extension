@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "YT Transcript Scraper",
+  "name": "YT Transcript Scraper — ZPressoLLC",
   "version": "2.7",
-  "description": "Scrape YouTube transcripts (single, batch, or by name), or run Tella calls: upload, grab the transcript, get a follow-up.",
+  "description": "Scrape YouTube transcripts (single, batch, or by name) or run Tella calls: upload, transcript, follow-up. By ZPressoLLC.",
   "permissions": [
     "activeTab",
     "scripting",
