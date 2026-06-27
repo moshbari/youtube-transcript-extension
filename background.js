@@ -773,6 +773,20 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
     return;
   }
+  // Delete a single history card (any stage — user explicitly chose it).
+  if (request.action === 'deleteTellaJob') {
+    getTellaJobs().then(async (jobs) => {
+      if (request.id && jobs[request.id]) delete jobs[request.id];
+      await setTellaJobs(jobs);
+      await broadcastTella();
+    });
+    return;
+  }
+  // Wipe the entire Tella history.
+  if (request.action === 'clearTellaAll') {
+    setTellaJobs({}).then(() => broadcastTella());
+    return;
+  }
 });
 
 // On service-worker startup, resume polling if any jobs are still in flight.

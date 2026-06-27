@@ -118,13 +118,15 @@
 
       <div class="batch-buttons">
         <button id="tellaRunBtn">Run pipeline</button>
-        <button id="tellaClearBtn" class="cancel-btn">Clear finished</button>
+        <button id="tellaClearBtn" class="cancel-btn">Clear history</button>
       </div>
       <div id="tellaStatus" class="batch-status"></div>
       <div id="tellaResults" class="batch-results"></div>
     </div>
 
   </div>
+  <!-- Sticky version badge: always visible, never scrolls away. Text is set from the manifest in popup.js. -->
+  <div id="versionBadge" class="version-badge"></div>
   <script src="popup.js"></script>
 </body>
 </html>

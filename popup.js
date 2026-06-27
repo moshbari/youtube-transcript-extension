@@ -6,6 +6,18 @@
 // you close it, so you can fill the long Tella form by copy/pasting field by
 // field across tabs. The pop-out reuses the saved draft, so whatever you've
 // already typed in the popup carries straight over.
+// Sticky version badge — text comes straight from manifest.json, so bumping the
+// manifest version is all it takes to update what the user sees. It can never go stale.
+(function showVersion() {
+  const badge = document.getElementById('versionBadge');
+  if (!badge) return;
+  try {
+    badge.textContent = 'v' + chrome.runtime.getManifest().version;
+  } catch (e) {
+    badge.style.display = 'none';
+  }
+})();
+
 const IS_POPOUT = new URLSearchParams(location.search).get('win') === '1';
 const popOutBtn = document.getElementById('popOutBtn');
 if (popOutBtn) {
@@ -869,9 +881,11 @@ const TELLA_STAGE_LABEL = {
 function renderTellaJobs(jobs) {
   if (!jobs || !jobs.length) { tellaResultsEl.innerHTML = ''; return; }
   tellaResultsEl.innerHTML = jobs.map((j) => {
-    let html = '<div class="batch-result-item" style="display:block;border:1px solid #2a2f3a;border-radius:8px;padding:10px;margin-bottom:8px;">';
+    let html = '<div class="batch-result-item" style="display:block;position:relative;border:1px solid #2a2f3a;border-radius:8px;padding:10px;margin-bottom:8px;">';
+    // Per-card delete (×). Confirmed before it removes the card from history.
+    html += `<button class="tella-del-btn" data-id="${escapeHtml(j.id)}" title="Delete this from history" style="position:absolute;top:6px;right:6px;background:transparent;border:none;color:#9aa3b2;font-size:16px;line-height:1;cursor:pointer;padding:2px 4px;">×</button>`;
     const stageColor = j.stage === 'done' ? '#00ff88' : (j.stage === 'failed' ? '#ff6b6b' : '#f5c451');
-    html += `<div style="font-weight:600;color:${stageColor};">${escapeHtml(TELLA_STAGE_LABEL[j.stage] || j.stage)}</div>`;
+    html += `<div style="font-weight:600;color:${stageColor};padding-right:18px;">${escapeHtml(TELLA_STAGE_LABEL[j.stage] || j.stage)}</div>`;
     html += `<div style="font-size:11px;color:#9aa3b2;margin:3px 0;">${escapeHtml(j.lastMessage || '')}</div>`;
     if (j.youtubeUrl) html += `<div style="font-size:11px;">▶️ <a href="${escapeHtml(j.youtubeUrl)}" target="_blank" rel="noopener" style="color:#00ff88;">${escapeHtml(j.youtubeUrl)}</a></div>`;
     if (j.stage === 'failed' && j.error) html += `<div style="font-size:11px;color:#ff6b6b;margin-top:4px;">${escapeHtml(j.error)}</div>`;
@@ -882,6 +896,15 @@ function renderTellaJobs(jobs) {
     html += '</div>';
     return html;
   }).join('');
+  // Re-attach delete handlers (innerHTML was rebuilt). Each delete double-checks first.
+  tellaResultsEl.querySelectorAll('.tella-del-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const id = btn.getAttribute('data-id');
+      if (!id) return;
+      if (!confirm('Delete this from your history? This cannot be undone.')) return;
+      chrome.runtime.sendMessage({ action: 'deleteTellaJob', id });
+    });
+  });
 }
 
 if (tellaRunBtn) {
@@ -902,7 +925,10 @@ if (tellaRunBtn) {
   });
 }
 if (tellaClearBtn) {
-  tellaClearBtn.addEventListener('click', () => chrome.runtime.sendMessage({ action: 'clearTellaDone' }));
+  tellaClearBtn.addEventListener('click', () => {
+    if (!confirm('Clear ALL history below? This deletes every card and cannot be undone.')) return;
+    chrome.runtime.sendMessage({ action: 'clearTellaAll' });
+  });
 }
 
 // Load current Tella jobs on open + live updates.

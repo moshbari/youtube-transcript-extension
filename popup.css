@@ -380,10 +380,30 @@ body {
 
 .container {
   padding: 24px;
+  /* room so content never hides behind the sticky version badge */
+  padding-bottom: 40px;
   display: flex;
   flex-direction: column;
   align-items: center;
   text-align: center;
+}
+
+/* Sticky version badge — pinned to the popup viewport, always visible while scrolling */
+.version-badge {
+  position: fixed;
+  bottom: 8px;
+  right: 10px;
+  z-index: 9999;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: #cfcfcf;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  padding: 2px 8px;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
 }
 
 h2 {
