@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Scraper by Mosh Bari",
-  "version": "2.9",
+  "version": "2.10",
   "description": "YouTube transcript scraper by Mosh Bari (ZPresso LLC): single, batch, or by-name transcripts, plus Tella call follow-up.",
   "permissions": [
     "activeTab",
@@ -37,7 +37,9 @@
         "https://devrant.99dfy.com/*",
         "https://tellatotube.up.railway.app/*"
       ],
-      "js": ["bridge.js"],
+      "js": [
+        "bridge.js"
+      ],
       "run_at": "document_idle"
     }
   ],

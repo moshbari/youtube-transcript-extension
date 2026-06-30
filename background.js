@@ -48,6 +48,13 @@ async function addDownloadedId(videoId, title) {
   await chrome.storage.local.set({ [DOWNLOADED_KEY]: ids });
 }
 
+// A single PERIODIC alarm drives all retries (not a chain of one-shots, which
+// breaks if the service worker is killed between passes). It ticks every 5 min
+// for the whole life of a batch; each tick re-runs the still-pending videos.
+function ensureBatchRetryAlarm() {
+  chrome.alarms.create(BATCH_RETRY_ALARM, { periodInMinutes: BATCH_RETRY_MIN });
+}
+
 // =====================================================================
 //  Offscreen document for downloads
 // =====================================================================
@@ -177,6 +184,9 @@ async function startBatch(urls, opts = {}) {
     results: []
   };
   await setQueue(queue);
+  // Start the persistent retry heartbeat NOW, so even if the worker dies between
+  // passes the alarm keeps ticking and re-drives the batch.
+  ensureBatchRetryAlarm();
   await processNext();
 }
 
@@ -297,6 +307,7 @@ async function finishPass(q) {
 
   // Everything downloaded — we're finished.
   if (!failedUrls.length) {
+    chrome.alarms.clear(BATCH_RETRY_ALARM);
     const finalState = { ...q, active: false,
       lastMessage: `All done ✓ — ${doneCount} transcript${doneCount === 1 ? '' : 's'} downloaded.` };
     await clearQueue();
@@ -306,15 +317,17 @@ async function finishPass(q) {
 
   // Hit the pass cap — give up on the stragglers (YouTube never made captions).
   if (q.pass >= (q.maxPasses || BATCH_MAX_PASSES)) {
+    chrome.alarms.clear(BATCH_RETRY_ALARM);
     const finalState = { ...q, active: false,
       lastMessage: `Stopped after ${q.pass} tries — ${doneCount} downloaded, ${failedUrls.length} still had no transcript on YouTube.` };
     await clearQueue();
-    chrome.alarms.clear(BATCH_RETRY_ALARM);
     broadcast('batchComplete', { state: finalState });
     return;
   }
 
-  // Some still pending — wait 5 min and try just those again.
+  // Some still pending — go into "waiting" until the next heartbeat tick (≤5 min)
+  // re-runs just those. The periodic alarm created at startBatch keeps ticking,
+  // so this survives the worker being killed in between.
   q.urls = failedUrls;
   q.total = failedUrls.length;
   q.index = 0;
@@ -323,9 +336,9 @@ async function finishPass(q) {
   q.pass = (q.pass || 1) + 1;
   q.waiting = true;
   q.nextRetryAt = Date.now() + BATCH_RETRY_MIN * 60 * 1000;
-  q.lastMessage = `${doneCount}/${q.allTotal} done — ${failedUrls.length} not ready yet. Retrying in ${BATCH_RETRY_MIN} min (try ${q.pass}).`;
+  q.lastMessage = `${doneCount}/${q.allTotal} done — ${failedUrls.length} not ready yet. Retrying within ${BATCH_RETRY_MIN} min (try ${q.pass}).`;
   await setQueue(q);
-  chrome.alarms.create(BATCH_RETRY_ALARM, { delayInMinutes: BATCH_RETRY_MIN });
+  ensureBatchRetryAlarm();   // idempotent — make sure the heartbeat is alive
   await broadcastState();
 }
 
@@ -373,11 +386,14 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   });
 });
 
-// 5-minute retry tick: re-run the pass over the still-pending videos.
+// Heartbeat tick (every 5 min): if the batch is waiting between passes, kick off
+// the next pass over the still-pending videos. If a pass is already in flight,
+// do nothing this tick. If there's no batch, stop the heartbeat.
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== BATCH_RETRY_ALARM) return;
   const q = await getQueue();
-  if (!q || !q.active) return;
+  if (!q || !q.active) { chrome.alarms.clear(BATCH_RETRY_ALARM); return; }
+  if (!q.waiting) return;            // a pass is currently running — don't double-start
   q.waiting = false;
   q.nextRetryAt = null;
   await setQueue(q);
@@ -957,13 +973,10 @@ getTellaJobs().then((jobs) => {
   if (Object.values(jobs).some((j) => j.stage === 'uploading' || j.stage === 'waiting')) ensureTellaAlarm();
 });
 
-// Resume an interrupted batch: if one was mid-pass when the worker died, pick it
-// back up; if it was between passes, make sure the 5-min retry alarm exists.
+// Resume an interrupted batch: always make sure the heartbeat alarm is alive,
+// then if it was mid-pass when the worker died, pick that pass back up.
 getQueue().then((q) => {
   if (!q || !q.active) return;
-  if (q.waiting) {
-    chrome.alarms.create(BATCH_RETRY_ALARM, { delayInMinutes: BATCH_RETRY_MIN });
-  } else {
-    processNext();
-  }
+  ensureBatchRetryAlarm();
+  if (!q.waiting) processNext();
 });
