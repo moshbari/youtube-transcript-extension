@@ -26,6 +26,28 @@ const BATCH_KEY            = 'batchQueue';
 const PER_VIDEO_TIMEOUT_MIN = 2;   // chrome.alarms minimum granularity is ~30s
 const TIMEOUT_ALARM         = 'batchVideoTimeout';
 
+// ---- Retry-until-ready + dedup (batch) ----
+// A batch makes repeated PASSES over its videos. Any video whose transcript
+// isn't ready yet (YouTube still generating captions) fails this pass and is
+// retried on the next pass, 5 minutes later, until every video has downloaded
+// or we hit the pass cap. Modelled on the Tella poll loop further down.
+const BATCH_RETRY_ALARM = 'batchRetry';
+const BATCH_RETRY_MIN   = 5;     // minutes between passes
+const BATCH_MAX_PASSES  = 36;    // 36 * 5 min ≈ 3 hours of retrying
+// Persistent set of video IDs we've already downloaded — never download twice.
+const DOWNLOADED_KEY    = 'downloadedVideoIds';
+
+async function getDownloadedIds() {
+  const r = await chrome.storage.local.get(DOWNLOADED_KEY);
+  return r[DOWNLOADED_KEY] || {};
+}
+async function addDownloadedId(videoId, title) {
+  if (!videoId) return;
+  const ids = await getDownloadedIds();
+  ids[videoId] = { at: Date.now(), title: title || '' };
+  await chrome.storage.local.set({ [DOWNLOADED_KEY]: ids });
+}
+
 // =====================================================================
 //  Offscreen document for downloads
 // =====================================================================
@@ -102,14 +124,52 @@ async function startBatch(urls, opts = {}) {
   const existing = await getQueue();
   if (existing && existing.active) return;
 
+  // De-dupe the incoming list by video ID, then drop anything we've already
+  // downloaded in a previous run (unless the caller forces a re-scrape).
+  const downloaded = opts.force ? {} : await getDownloadedIds();
+  const seen = new Set();
+  const fresh = [];
+  let skipped = 0;
+  for (const u of urls) {
+    const id = extractYtId(u);
+    const key = id || u;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (id && downloaded[id]) { skipped++; continue; }
+    fresh.push(u);
+  }
+
+  // Remember where the user was so we can snap focus back between passes.
+  let returnToTabId = null, returnToWindowId = null;
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs && tabs[0]) { returnToTabId = tabs[0].id; returnToWindowId = tabs[0].windowId; }
+  } catch {}
+
+  // Nothing new to do — everything was already downloaded.
+  if (!fresh.length) {
+    broadcast('batchComplete', {
+      state: { active: false, allTotal: urls.length, doneIds: [], skipped, results: [],
+               lastMessage: `Nothing new — all ${skipped} already downloaded.` }
+    });
+    return;
+  }
+
   const queue = {
     active: true,
-    urls: urls.slice(),
-    total: urls.length,
+    urls: fresh.slice(),       // the working list for THIS pass
+    total: fresh.length,
     index: 0,
     currentTabId: null,
     lastInjectedIndex: -1,
-    lastMessage: 'Starting...',
+    lastMessage: skipped ? `Starting (${skipped} already downloaded, skipped)...` : 'Starting...',
+    // --- retry-until-ready bookkeeping ---
+    allTotal: fresh.length,    // total videos this batch is responsible for
+    doneIds: [],               // video IDs successfully downloaded this batch
+    pass: 1,
+    maxPasses: BATCH_MAX_PASSES,
+    skipped,
+    returnToTabId, returnToWindowId,
     // When toCouncil is on, each scraped transcript is sent to The Closer's
     // Council and the follow-up is stored on that video's result.
     toCouncil: !!opts.toCouncil,
@@ -118,6 +178,15 @@ async function startBatch(urls, opts = {}) {
   };
   await setQueue(queue);
   await processNext();
+}
+
+// Snap focus back to wherever the user was before the batch stole it.
+function restoreFocus(q) {
+  if (!q) return;
+  if (q.returnToTabId != null) {
+    chrome.tabs.update(q.returnToTabId, { active: true }).catch(() => {});
+    if (q.returnToWindowId != null) chrome.windows.update(q.returnToWindowId, { focused: true }).catch(() => {});
+  }
 }
 
 // ---- Send a transcript to The Closer's Council (fire-and-forget) ----
@@ -142,6 +211,7 @@ async function cancelBatch() {
   q.active = false;
   await setQueue(q);
   chrome.alarms.clear(TIMEOUT_ALARM);
+  chrome.alarms.clear(BATCH_RETRY_ALARM);
   if (q.currentTabId) {
     try { await chrome.tabs.remove(q.currentTabId); } catch {}
   }
@@ -154,15 +224,9 @@ async function processNext() {
   const q = await getQueue();
   if (!q || !q.active) return;
 
-  // All done?
+  // Reached the end of this pass?
   if (q.index >= q.total) {
-    if (q.currentTabId) {
-      try { await chrome.tabs.remove(q.currentTabId); } catch {}
-    }
-    chrome.alarms.clear(TIMEOUT_ALARM);
-    const finalState = { ...q, active: false };
-    await clearQueue();
-    broadcast('batchComplete', { state: finalState });
+    await finishPass(q);
     return;
   }
 
@@ -201,6 +265,14 @@ async function recordResultAndAdvance(result) {
   const q = await getQueue();
   if (!q || !q.active) return;
   q.results.push(result);
+  if (result.status === 'success') {
+    const vid = result.videoId || extractYtId(result.url || '');
+    if (vid) {
+      await addDownloadedId(vid, result.title);        // never download this one again
+      if (!q.doneIds) q.doneIds = [];
+      if (!q.doneIds.includes(vid)) q.doneIds.push(vid);
+    }
+  }
   q.index++;
   q.lastInjectedIndex = -1;     // allow next index's onUpdated to inject
   q.lastMessage = result.status === 'success'
@@ -210,6 +282,51 @@ async function recordResultAndAdvance(result) {
   chrome.alarms.clear(TIMEOUT_ALARM);
   await broadcastState();
   await processNext();
+}
+
+// ---------- end of a pass: download done, or schedule a 5-min retry ----------
+async function finishPass(q) {
+  if (q.currentTabId) { try { await chrome.tabs.remove(q.currentTabId); } catch {} }
+  q.currentTabId = null;
+  chrome.alarms.clear(TIMEOUT_ALARM);
+  restoreFocus(q);
+
+  // Videos that still don't have a transcript this pass — retry them next time.
+  const failedUrls = q.results.filter(r => r.status !== 'success').map(r => r.url);
+  const doneCount = (q.doneIds || []).length;
+
+  // Everything downloaded — we're finished.
+  if (!failedUrls.length) {
+    const finalState = { ...q, active: false,
+      lastMessage: `All done ✓ — ${doneCount} transcript${doneCount === 1 ? '' : 's'} downloaded.` };
+    await clearQueue();
+    broadcast('batchComplete', { state: finalState });
+    return;
+  }
+
+  // Hit the pass cap — give up on the stragglers (YouTube never made captions).
+  if (q.pass >= (q.maxPasses || BATCH_MAX_PASSES)) {
+    const finalState = { ...q, active: false,
+      lastMessage: `Stopped after ${q.pass} tries — ${doneCount} downloaded, ${failedUrls.length} still had no transcript on YouTube.` };
+    await clearQueue();
+    chrome.alarms.clear(BATCH_RETRY_ALARM);
+    broadcast('batchComplete', { state: finalState });
+    return;
+  }
+
+  // Some still pending — wait 5 min and try just those again.
+  q.urls = failedUrls;
+  q.total = failedUrls.length;
+  q.index = 0;
+  q.lastInjectedIndex = -1;
+  q.results = [];
+  q.pass = (q.pass || 1) + 1;
+  q.waiting = true;
+  q.nextRetryAt = Date.now() + BATCH_RETRY_MIN * 60 * 1000;
+  q.lastMessage = `${doneCount}/${q.allTotal} done — ${failedUrls.length} not ready yet. Retrying in ${BATCH_RETRY_MIN} min (try ${q.pass}).`;
+  await setQueue(q);
+  chrome.alarms.create(BATCH_RETRY_ALARM, { delayInMinutes: BATCH_RETRY_MIN });
+  await broadcastState();
 }
 
 // =====================================================================
@@ -254,6 +371,17 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
     status: 'failed',
     error: 'Timed out after 2 min (no transcript or YouTube hung)'
   });
+});
+
+// 5-minute retry tick: re-run the pass over the still-pending videos.
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name !== BATCH_RETRY_ALARM) return;
+  const q = await getQueue();
+  if (!q || !q.active) return;
+  q.waiting = false;
+  q.nextRetryAt = null;
+  await setQueue(q);
+  await processNext();
 });
 
 // =====================================================================
@@ -321,6 +449,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'cancelBatch') {
     cancelBatch();
     return;
+  }
+
+  // How many videos has the extension ever downloaded (the dedup memory)?
+  if (request.action === 'getDownloadedCount') {
+    getDownloadedIds().then((ids) => sendResponse({ ok: true, count: Object.keys(ids).length }));
+    return true; // async
+  }
+
+  // Forget the dedup memory so previously-downloaded videos can be scraped again.
+  if (request.action === 'clearDownloaded') {
+    chrome.storage.local.remove(DOWNLOADED_KEY).then(() => sendResponse({ ok: true }));
+    return true; // async
   }
 
   // ----- batch progress (forwarded from content.js) -----
@@ -458,6 +598,29 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     .then((r) => sendResponse(r))
     .catch((e) => sendResponse({ ok: false, error: (e && e.message) || 'Scrape failed' }));
   return true; // keep the message channel open for the async response
+});
+
+// ----- Batch handoff from a web page (e.g. tella-to-youtube) -----
+// bridge.js forwards a LIST of YouTube URLs here. We feed them straight into
+// the same batch engine the popup uses, so the user never copy-pastes links:
+// upload page → "Send to Scraper" → transcripts download themselves (with the
+// 5-min retry + dedup above). Returns immediately; progress shows in the popup.
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (!request || request.action !== 'bridgeBatch') return;
+  const urls = Array.isArray(request.urls) ? request.urls.filter(Boolean) : [];
+  if (!urls.length) {
+    sendResponse({ ok: false, error: 'No YouTube links received.' });
+    return true;
+  }
+  getQueue().then((existing) => {
+    if (existing && existing.active) {
+      sendResponse({ ok: false, error: 'A batch is already running — wait for it to finish.' });
+      return;
+    }
+    startBatch(urls, { toCouncil: false });
+    sendResponse({ ok: true, accepted: urls.length });
+  });
+  return true; // async sendResponse
 });
 
 // ----- open a YT watch page in the background and scrape via content.js -----
@@ -792,4 +955,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // On service-worker startup, resume polling if any jobs are still in flight.
 getTellaJobs().then((jobs) => {
   if (Object.values(jobs).some((j) => j.stage === 'uploading' || j.stage === 'waiting')) ensureTellaAlarm();
+});
+
+// Resume an interrupted batch: if one was mid-pass when the worker died, pick it
+// back up; if it was between passes, make sure the 5-min retry alarm exists.
+getQueue().then((q) => {
+  if (!q || !q.active) return;
+  if (q.waiting) {
+    chrome.alarms.create(BATCH_RETRY_ALARM, { delayInMinutes: BATCH_RETRY_MIN });
+  } else {
+    processNext();
+  }
 });

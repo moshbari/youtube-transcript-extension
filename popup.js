@@ -265,6 +265,27 @@ batchCancelBtn.addEventListener('click', () => {
   batchStatusEl.textContent = 'Cancelling...';
 });
 
+// ----- "already downloaded" dedup memory: show count + allow reset -----
+function refreshDownloadedCount() {
+  const el = document.getElementById('batchDownloadedCount');
+  if (!el) return;
+  chrome.runtime.sendMessage({ action: 'getDownloadedCount' }, (resp) => {
+    if (chrome.runtime.lastError || !resp) { el.textContent = ''; return; }
+    el.textContent = resp.count ? `${resp.count} video${resp.count === 1 ? '' : 's'} already downloaded (won't repeat)` : '';
+  });
+}
+(function () {
+  const reset = document.getElementById('batchResetDownloaded');
+  if (reset) reset.addEventListener('click', () => {
+    chrome.runtime.sendMessage({ action: 'clearDownloaded' }, () => {
+      refreshDownloadedCount();
+      batchStatusEl.textContent = 'Cleared the downloaded list — videos can be scraped again.';
+      batchStatusEl.style.color = '#ffaa00';
+    });
+  });
+})();
+refreshDownloadedCount();
+
 function setBatchUiActive(active) {
   batchScrapeBtn.style.display = active ? 'none' : '';
   batchCancelBtn.style.display = active ? '' : 'none';
@@ -273,20 +294,30 @@ function setBatchUiActive(active) {
 }
 
 function renderBatchProgress(state) {
-  // state = { active, urls, index, total, results, currentUrl, lastMessage }
+  // state = { active, urls, index, total, results, lastMessage,
+  //           allTotal, doneIds, pass, waiting }  (last four added for retry-until-ready)
   const total = state.total || (state.urls ? state.urls.length : 0);
   const completed = state.results ? state.results.length : 0;
-  const pct = total === 0 ? 0 : (completed / total) * 100;
+
+  // Overall progress across ALL retry passes, when those fields are present.
+  const overallTotal = state.allTotal || total;
+  const overallDone = state.doneIds ? state.doneIds.length
+    : (state.results || []).filter(r => r.status === 'success').length;
+  const pct = overallTotal === 0 ? 0 : (overallDone / overallTotal) * 100;
   batchProgressFill.style.width = pct + '%';
 
-  if (state.active) {
+  if (state.active && state.waiting) {
+    // Between passes — counting down to the next 5-min retry.
     batchProgressText.textContent =
-      `Video ${Math.min(completed + 1, total)} of ${total}` +
+      `${overallDone}/${overallTotal} downloaded — ${overallTotal - overallDone} waiting for YouTube captions` +
+      (state.pass ? ` (retry ${state.pass} soon)` : '');
+  } else if (state.active) {
+    batchProgressText.textContent =
+      `${overallDone}/${overallTotal} downloaded · video ${Math.min(completed + 1, total)} of ${total} this pass` +
       (state.lastMessage ? ` — ${state.lastMessage}` : '');
   } else {
-    const succeeded = (state.results || []).filter(r => r.status === 'success').length;
-    const failed    = (state.results || []).filter(r => r.status !== 'success').length;
-    batchProgressText.textContent = `Done — ${succeeded} succeeded, ${failed} failed`;
+    batchProgressText.textContent = state.lastMessage
+      || `Done — ${overallDone}/${overallTotal} downloaded`;
   }
 
   // Render the results list. Pad with pending placeholders for upcoming videos.
@@ -405,10 +436,9 @@ chrome.runtime.onMessage.addListener((request) => {
   if (request.action === 'batchComplete') {
     setBatchUiActive(false);
     renderBatchProgress({ ...request.state, active: false });
-    batchStatusEl.textContent =
-      `Batch finished. ${request.state.results.filter(r => r.status === 'success').length}` +
-      ` of ${request.state.total} succeeded.`;
+    batchStatusEl.textContent = request.state.lastMessage || 'Batch finished.';
     batchStatusEl.style.color = '#00ff88';
+    refreshDownloadedCount();
   }
   if (request.action === 'batchCancelled') {
     setBatchUiActive(false);

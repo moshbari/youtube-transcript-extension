@@ -56,6 +56,12 @@
       </div>
       <div id="batchStatus" class="batch-status"></div>
 
+      <!-- Dedup memory: how many videos already downloaded + a reset -->
+      <div class="batch-dedup-row" style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#9aa3b2;margin-top:6px;">
+        <span id="batchDownloadedCount"></span>
+        <button id="batchResetDownloaded" class="batch-clear-btn" title="Forget which videos were already downloaded so they can be scraped again">Reset downloaded list</button>
+      </div>
+
       <!-- Progress section -->
       <div id="batchProgress" class="batch-progress" style="display:none;">
         <div class="batch-progress-bar"><div id="batchProgressFill" class="batch-progress-fill"></div></div>

@@ -15,7 +15,10 @@
 
 (function () {
   const EXT = 'yt-scraper-ext';
-  const APP = 'pulltranscript-app';
+  // Accept handshakes from any of our own web apps. tella-to-youtube uses this
+  // to push a whole batch of freshly-uploaded YouTube links straight into the
+  // extension's batch scraper (no copy-paste).
+  const APPS = ['pulltranscript-app', 'tella-app'];
   const version = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '';
 
   const announce = () => {
@@ -26,10 +29,30 @@
     // Only trust messages from this same page.
     if (event.source !== window) return;
     const msg = event.data;
-    if (!msg || msg.source !== APP) return;
+    if (!msg || !APPS.includes(msg.source)) return;
 
     if (msg.type === 'ping') {
       announce();
+      return;
+    }
+
+    // Push a whole list of YouTube URLs into the extension's batch scraper.
+    if (msg.type === 'scrapeBatch') {
+      const requestId = msg.requestId;
+      const urls = Array.isArray(msg.urls) ? msg.urls : [];
+      const reply = (payload) =>
+        window.postMessage({ source: EXT, type: 'batchAccepted', requestId, ...payload }, window.location.origin);
+      try {
+        chrome.runtime.sendMessage({ action: 'bridgeBatch', urls }, (resp) => {
+          if (chrome.runtime.lastError) {
+            reply({ ok: false, error: chrome.runtime.lastError.message || 'Extension error' });
+            return;
+          }
+          reply(resp || { ok: false, error: 'No response from extension' });
+        });
+      } catch (e) {
+        reply({ ok: false, error: (e && e.message) || 'Extension call failed' });
+      }
       return;
     }
 
