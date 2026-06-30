@@ -2,12 +2,151 @@
   function sendStatus(message) {
     chrome.runtime.sendMessage({ action: 'status', message });
   }
+  function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)); }
 
-  function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  function msToTimestamp(ms) {
+    const t = Math.floor((ms || 0) / 1000);
+    const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  // Pull a JSON array that follows "key": out of a big string, brace-balanced
+  // (handles nested arrays/objects, unlike a naive non-greedy regex).
+  function jsonArrayAfter(text, key) {
+    const i = text.indexOf(key);
+    if (i === -1) return null;
+    const start = text.indexOf('[', i);
+    if (start === -1) return null;
+    let depth = 0, inStr = false, esc = false;
+    for (let k = start; k < text.length; k++) {
+      const c = text[k];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (c === '\\') esc = true;
+        else if (c === '"') inStr = false;
+        continue;
+      }
+      if (c === '"') inStr = true;
+      else if (c === '[') depth++;
+      else if (c === ']') { depth--; if (depth === 0) { try { return JSON.parse(text.slice(start, k + 1)); } catch { return null; } } }
+    }
+    return null;
+  }
+
+  // Find the captionTracks array (if any) from the page's inline data.
+  function getCaptionTracks() {
+    const sources = [];
+    for (const s of document.querySelectorAll('script')) {
+      const t = s.textContent || '';
+      if (t.includes('captionTracks')) sources.push(t);
+    }
+    sources.push(document.documentElement.innerHTML);
+    for (const src of sources) {
+      const tracks = jsonArrayAfter(src, '"captionTracks"');
+      if (tracks && tracks.length) return tracks;
+    }
+    return null;
+  }
+
+  // FAST PATH: fetch the caption track straight from YouTube's timedtext endpoint.
+  // Runs in the page's own origin/session (cookies + visitor data), so it works
+  // for the user's unlisted videos — no clicking the flaky "Show transcript" UI.
+  async function tryDirectCaptions() {
+    const tracks = getCaptionTracks();
+    if (!tracks) return { lines: null, captionsExist: false };
+    // Prefer Bengali, then any non-translated track, else the first.
+    const track =
+      tracks.find(t => (t.languageCode || '').toLowerCase().startsWith('bn')) ||
+      tracks.find(t => t.kind === 'asr') ||
+      tracks[0];
+    if (!track || !track.baseUrl) return { lines: null, captionsExist: true };
+
+    // Try JSON3 first, then the default XML format.
+    const base = track.baseUrl;
+    const urls = [base + (base.includes('fmt=') ? '' : '&fmt=json3'), base];
+    for (const url of urls) {
+      try {
+        const res = await fetch(url, { credentials: 'include' });
+        const body = await res.text();
+        if (!body) continue;
+        const lines = [];
+        if (body.trim().startsWith('{')) {
+          const data = JSON.parse(body);
+          for (const ev of (data.events || [])) {
+            if (!ev.segs) continue;
+            const text = ev.segs.map(s => s.utf8 || '').join('').replace(/\s+/g, ' ').trim();
+            if (text) lines.push({ timestamp: msToTimestamp(ev.tStartMs), text });
+          }
+        } else if (body.includes('<text')) {
+          const doc = new DOMParser().parseFromString(body, 'text/xml');
+          for (const node of doc.querySelectorAll('text')) {
+            const text = (node.textContent || '')
+              .replace(/&amp;/g, '&').replace(/&#39;/g, "'").replace(/&quot;/g, '"')
+              .replace(/\s+/g, ' ').trim();
+            if (text) lines.push({ timestamp: msToTimestamp(parseFloat(node.getAttribute('start') || '0') * 1000), text });
+          }
+        }
+        if (lines.length) return { lines, captionsExist: true };
+      } catch (_) { /* try next */ }
+    }
+    return { lines: null, captionsExist: true };
+  }
+
+  // Build the .txt + notify the background. Shared by both scrape paths.
+  function emitTranscript(transcriptLines) {
+    const videoTitle = document.querySelector('yt-formatted-string.ytd-watch-metadata, h1.ytd-watch-metadata yt-formatted-string, h1.title yt-formatted-string')?.innerText?.trim()
+      || document.title.replace(' - YouTube', '').trim();
+    const videoUrl = window.location.href;
+    let videoId = 'youtube';
+    const urlParams = new URLSearchParams(window.location.search);
+    if (urlParams.has('v')) videoId = urlParams.get('v');
+
+    let fullText = `${videoTitle}\n${videoUrl}\n\n`;
+    for (const line of transcriptLines) fullText += `${line.timestamp} - ${line.text}\n`;
+
+    const safeTitle = (videoTitle || '')
+      .replace(/[<>:"/\\|?*\x00-\x1F\[\]\{\}]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/[. ]+$/, '')
+      .slice(0, 150) || 'youtube';
+    const filename = `${safeTitle} - ${videoId}.txt`;
+
+    if (!window.__tellaScrape) {
+      chrome.runtime.sendMessage({ action: 'download', text: fullText, filename });
+    }
+    chrome.storage.local.set({
+      lastTranscript: { title: videoTitle, url: videoUrl, lines: transcriptLines, videoId, scrapedAt: new Date().toISOString() }
+    });
+    const plainText = transcriptLines.map(l => l.text).join(' ').replace(/\s+/g, ' ').trim();
+    chrome.runtime.sendMessage({
+      action: 'done', text: fullText, plainText, lines: transcriptLines.length,
+      segments: transcriptLines, videoId, title: videoTitle, url: videoUrl
+    });
+    if (window.history.length <= 2) {
+      setTimeout(() => chrome.runtime.sendMessage({ action: 'closeSenderTab' }), 1000);
+    }
   }
 
   try {
+    // ---- FAST PATH: direct caption fetch ----
+    sendStatus('Checking for captions…');
+    const direct = await tryDirectCaptions();
+    if (direct.lines && direct.lines.length) {
+      sendStatus(`Got ${direct.lines.length} caption lines.`);
+      emitTranscript(direct.lines);
+      return;
+    }
+    // If we can see the page data and it has NO caption track yet, fail fast so
+    // the batch retries in 5 min (instead of a slow 20s UI dance for nothing).
+    if (direct.captionsExist === false) {
+      chrome.runtime.sendMessage({ action: 'error', message: 'No captions on YouTube yet — will retry.' });
+      return;
+    }
+
+    // ---- FALLBACK: the UI scrape (click "Show transcript", read the panel) ----
     sendStatus('Expanding description...');
     let expandRetries = 0;
     let expandBtn = null;
@@ -45,7 +184,6 @@
 
     sendStatus('Waiting for transcript panel...');
 
-    // Wait for the panel to appear
     let retries = 0;
     while (!document.querySelector('transcript-segment-view-model, ytd-transcript-segment-renderer') && retries < 20) {
       await sleep(500);
@@ -74,7 +212,6 @@
         const lastElement = segments[segments.length - 1];
         lastElement.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
-        // Force scroll events specifically because background tabs suspend IntersectionObservers
         const container = lastElement.closest('#segments-container, ytd-engagement-panel-section-list-renderer #content, ytd-transcript-segment-list-renderer, yt-formatted-string');
         if (container) {
           container.scrollTop = container.scrollHeight;
@@ -88,7 +225,6 @@
             c.dispatchEvent(new WheelEvent('wheel', { deltaY: 1000, bubbles: true }));
         });
 
-        // Trigger global window scroll to catch page-level IntersectionObservers
         window.scrollBy(0, 500);
         window.dispatchEvent(new Event('scroll'));
 
@@ -97,16 +233,10 @@
       }
     }
 
-    // Extract video title and URL
-    const videoTitle = document.querySelector('yt-formatted-string.ytd-watch-metadata, h1.ytd-watch-metadata yt-formatted-string, h1.title yt-formatted-string')?.innerText?.trim() || document.title.replace(' - YouTube', '').trim();
-    const videoUrl = window.location.href;
-
     const segments = document.querySelectorAll('transcript-segment-view-model, ytd-transcript-segment-renderer');
     let transcriptLines = [];
 
     for (const segment of segments) {
-      // YouTube changes class names frequently — try specific selectors first,
-      // then fall back to attribute-contains matches, then raw-text parsing.
       let timestamp = null;
       let text = null;
 
@@ -122,8 +252,6 @@
         timestamp = timestampEl.innerText.trim();
         text = textEl.innerText.trim();
       } else {
-        // Fallback: parse the segment's own innerText.
-        // Format is reliably "M:SS text..." or "H:MM:SS text...".
         const raw = (segment.innerText || '').trim();
         const match = raw.match(/^(\d{1,2}:\d{2}(?::\d{2})?)\s+([\s\S]+)$/);
         if (match) {
@@ -138,73 +266,7 @@
     }
 
     if (transcriptLines.length > 0) {
-      let videoId = 'youtube';
-      const urlParams = new URLSearchParams(window.location.search);
-      if (urlParams.has('v')) videoId = urlParams.get('v');
-
-      // Build the full text with title and URL at the top
-      let fullText = `${videoTitle}\n${videoUrl}\n\n`;
-      for (const line of transcriptLines) {
-        fullText += `${line.timestamp} - ${line.text}\n`;
-      }
-
-      // Build a filesystem-safe filename: "Title - VIDEOID.txt"
-      // Strip filesystem-illegal chars and a few extras (brackets, braces)
-      // that Chrome's downloads filename sanitizer has been known to choke
-      // on, collapse whitespace, drop trailing dots/spaces (Windows
-      // quirk), and cap length so "Title - VIDEOID.txt" stays under
-      // typical 255-byte path limits.
-      const safeTitle = (videoTitle || '')
-        .replace(/[<>:"/\\|?*\x00-\x1F\[\]\{\}]/g, '')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .replace(/[. ]+$/, '')
-        .slice(0, 150) || 'youtube';
-      const filename = `${safeTitle} - ${videoId}.txt`;
-
-      // Hand the raw text + filename to the service worker. It routes
-      // the download through the offscreen document, which uses
-      // <a download>.click() in a page context — the only path we've
-      // found that reliably honors the filename across Chrome versions
-      // while still bypassing YouTube's per-origin multi-download gate.
-      if (!window.__tellaScrape) {
-        chrome.runtime.sendMessage({
-          action: 'download',
-          text: fullText,
-          filename
-        });
-      }
-
-      // Save transcript data to chrome.storage.local for the popup to display
-      chrome.storage.local.set({
-        lastTranscript: {
-          title: videoTitle,
-          url: videoUrl,
-          lines: transcriptLines,
-          videoId: videoId,
-          scrapedAt: new Date().toISOString()
-        }
-      });
-
-      const plainText = transcriptLines.map(l => l.text).join(' ').replace(/\s+/g, ' ').trim();
-
-      chrome.runtime.sendMessage({
-        action: 'done',
-        text: fullText,
-        plainText: plainText,
-        lines: transcriptLines.length,
-        segments: transcriptLines, // [{ timestamp, text }] — used by the PullTranscript bridge
-        videoId: videoId,
-        title: videoTitle,
-        url: videoUrl
-      });
-
-      // If opening in a freshly created background tab, the history length is very small
-      if (window.history.length <= 2) {
-          setTimeout(() => {
-             chrome.runtime.sendMessage({ action: 'closeSenderTab' });
-          }, 1000);
-      }
+      emitTranscript(transcriptLines);
     } else {
       chrome.runtime.sendMessage({ action: 'error', message: 'Failed to extract any text from the panel.' });
     }
