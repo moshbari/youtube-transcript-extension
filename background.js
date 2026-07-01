@@ -27,13 +27,15 @@ const PER_VIDEO_TIMEOUT_MIN = 2;   // chrome.alarms minimum granularity is ~30s
 const TIMEOUT_ALARM         = 'batchVideoTimeout';
 
 // ---- Retry-until-ready + dedup (batch) ----
-// A batch makes repeated PASSES over its videos. Any video whose transcript
-// isn't ready yet (YouTube still generating captions) fails this pass and is
-// retried on the next pass, 5 minutes later, until every video has downloaded
-// or we hit the pass cap. Modelled on the Tella poll loop further down.
+// A batch makes repeated PASSES over its videos. The FIRST pass is delayed one
+// interval too (YouTube needs a few minutes to generate captions after upload),
+// so we never scrape immediately. Any video whose transcript isn't ready yet
+// fails its pass and is retried on the next pass, 3 minutes later, until every
+// video has downloaded or we hit the pass cap. Modelled on the Tella poll loop
+// further down.
 const BATCH_RETRY_ALARM = 'batchRetry';
-const BATCH_RETRY_MIN   = 5;     // minutes between passes
-const BATCH_MAX_PASSES  = 36;    // 36 * 5 min ≈ 3 hours of retrying
+const BATCH_RETRY_MIN   = 3;     // minutes between passes (and before the first)
+const BATCH_MAX_PASSES  = 60;    // 60 * 3 min ≈ 3 hours of retrying
 // Persistent set of video IDs we've already downloaded — never download twice.
 const DOWNLOADED_KEY    = 'downloadedVideoIds';
 
@@ -49,8 +51,10 @@ async function addDownloadedId(videoId, title) {
 }
 
 // A single PERIODIC alarm drives all retries (not a chain of one-shots, which
-// breaks if the service worker is killed between passes). It ticks every 5 min
+// breaks if the service worker is killed between passes). It ticks every 3 min
 // for the whole life of a batch; each tick re-runs the still-pending videos.
+// With no delayInMinutes, the first tick also fires after one full period, which
+// is what gives us the "wait 3 min before the very first scrape" behavior.
 function ensureBatchRetryAlarm() {
   chrome.alarms.create(BATCH_RETRY_ALARM, { periodInMinutes: BATCH_RETRY_MIN });
 }
@@ -169,7 +173,9 @@ async function startBatch(urls, opts = {}) {
     index: 0,
     currentTabId: null,
     lastInjectedIndex: -1,
-    lastMessage: skipped ? `Starting (${skipped} already downloaded, skipped)...` : 'Starting...',
+    lastMessage: skipped
+      ? `Queued (${skipped} already downloaded, skipped). First transcript check in ${BATCH_RETRY_MIN} min…`
+      : `Queued — first transcript check in ${BATCH_RETRY_MIN} min (YouTube needs a moment to make captions)…`,
     // --- retry-until-ready bookkeeping ---
     allTotal: fresh.length,    // total videos this batch is responsible for
     doneIds: [],               // video IDs successfully downloaded this batch
@@ -177,6 +183,11 @@ async function startBatch(urls, opts = {}) {
     maxPasses: BATCH_MAX_PASSES,
     skipped,
     returnToTabId, returnToWindowId,
+    // Don't scrape immediately — wait one interval so YouTube has time to
+    // generate captions. The heartbeat alarm's first tick (BATCH_RETRY_MIN
+    // minutes from now) drives the first pass.
+    waiting: true,
+    nextRetryAt: Date.now() + BATCH_RETRY_MIN * 60 * 1000,
     // When toCouncil is on, each scraped transcript is sent to The Closer's
     // Council and the follow-up is stored on that video's result.
     toCouncil: !!opts.toCouncil,
@@ -184,10 +195,11 @@ async function startBatch(urls, opts = {}) {
     results: []
   };
   await setQueue(queue);
-  // Start the persistent retry heartbeat NOW, so even if the worker dies between
-  // passes the alarm keeps ticking and re-drives the batch.
+  // Start the persistent retry heartbeat NOW. Its first tick (in BATCH_RETRY_MIN
+  // min) kicks off the first pass; if the worker dies in the meantime the alarm
+  // keeps ticking and re-drives the batch.
   ensureBatchRetryAlarm();
-  await processNext();
+  await broadcastState();
 }
 
 // Snap focus back to wherever the user was before the batch stole it.
@@ -294,7 +306,7 @@ async function recordResultAndAdvance(result) {
   await processNext();
 }
 
-// ---------- end of a pass: download done, or schedule a 5-min retry ----------
+// ---------- end of a pass: download done, or schedule a 3-min retry ----------
 async function finishPass(q) {
   if (q.currentTabId) { try { await chrome.tabs.remove(q.currentTabId); } catch {} }
   q.currentTabId = null;
@@ -325,7 +337,7 @@ async function finishPass(q) {
     return;
   }
 
-  // Some still pending — go into "waiting" until the next heartbeat tick (≤5 min)
+  // Some still pending — go into "waiting" until the next heartbeat tick (≤3 min)
   // re-runs just those. The periodic alarm created at startBatch keeps ticking,
   // so this survives the worker being killed in between.
   q.urls = failedUrls;
@@ -386,7 +398,7 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   });
 });
 
-// Heartbeat tick (every 5 min): if the batch is waiting between passes, kick off
+// Heartbeat tick (every 3 min): if the batch is waiting between passes, kick off
 // the next pass over the still-pending videos. If a pass is already in flight,
 // do nothing this tick. If there's no batch, stop the heartbeat.
 chrome.alarms.onAlarm.addListener(async (alarm) => {
