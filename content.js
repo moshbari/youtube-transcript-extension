@@ -36,7 +36,13 @@
   }
 
   // Find the captionTracks array (if any) from the page's inline data.
+  // YouTube is a single-page app: the inline <script> from the FIRST page load
+  // stays in the DOM after you click through to another video, so the tracks it
+  // holds describe whatever video was loaded first, not the one on screen. Each
+  // baseUrl carries its own v=<id>, so keep only tracks matching the current
+  // video — otherwise we'd save video A's words under video B's title and URL.
   function getCaptionTracks() {
+    const currentId = new URLSearchParams(window.location.search).get('v');
     const sources = [];
     for (const s of document.querySelectorAll('script')) {
       const t = s.textContent || '';
@@ -45,7 +51,9 @@
     sources.push(document.documentElement.innerHTML);
     for (const src of sources) {
       const tracks = jsonArrayAfter(src, '"captionTracks"');
-      if (tracks && tracks.length) return tracks;
+      if (!tracks || !tracks.length) continue;
+      if (currentId && !tracks.some(t => (t.baseUrl || '').includes('v=' + currentId))) continue;
+      return tracks;
     }
     return null;
   }
@@ -53,15 +61,17 @@
   // FAST PATH: fetch the caption track straight from YouTube's timedtext endpoint.
   // Runs in the page's own origin/session (cookies + visitor data), so it works
   // for the user's unlisted videos — no clicking the flaky "Show transcript" UI.
+  // Returns the lines, or null when this route can't deliver them and the UI
+  // scrape should take over. Never treat null as "the video has no captions".
   async function tryDirectCaptions() {
     const tracks = getCaptionTracks();
-    if (!tracks) return { lines: null, captionsExist: false };
+    if (!tracks) return null;
     // Prefer Bengali, then any non-translated track, else the first.
     const track =
       tracks.find(t => (t.languageCode || '').toLowerCase().startsWith('bn')) ||
       tracks.find(t => t.kind === 'asr') ||
       tracks[0];
-    if (!track || !track.baseUrl) return { lines: null, captionsExist: true };
+    if (!track || !track.baseUrl) return null;
 
     // Try JSON3 first, then the default XML format.
     const base = track.baseUrl;
@@ -88,10 +98,10 @@
             if (text) lines.push({ timestamp: msToTimestamp(parseFloat(node.getAttribute('start') || '0') * 1000), text });
           }
         }
-        if (lines.length) return { lines, captionsExist: true };
+        if (lines.length) return lines;
       } catch (_) { /* try next */ }
     }
-    return { lines: null, captionsExist: true };
+    return null;
   }
 
   // Build the .txt + notify the background. Shared by both scrape paths.
@@ -134,17 +144,17 @@
     // ---- FAST PATH: direct caption fetch ----
     sendStatus('Checking for captions…');
     const direct = await tryDirectCaptions();
-    if (direct.lines && direct.lines.length) {
-      sendStatus(`Got ${direct.lines.length} caption lines.`);
-      emitTranscript(direct.lines);
+    if (direct && direct.length) {
+      sendStatus(`Got ${direct.length} caption lines.`);
+      emitTranscript(direct);
       return;
     }
-    // If we can see the page data and it has NO caption track yet, fail fast so
-    // the batch retries in 5 min (instead of a slow 20s UI dance for nothing).
-    if (direct.captionsExist === false) {
-      chrome.runtime.sendMessage({ action: 'error', message: 'No captions on YouTube yet — will retry.' });
-      return;
-    }
+    // No usable tracks is NOT proof the video lacks captions — arriving here by
+    // clicking a link (rather than loading the URL fresh) means the page never
+    // inlined this video's player data at all, and YouTube now returns an empty
+    // body for timedtext fetches that carry no proof-of-origin token. Both are
+    // silent, and both are recoverable: the UI panel below still has the words.
+    // Whether captions really exist is decided by the "Show transcript" button.
 
     // ---- FALLBACK: the UI scrape (click "Show transcript", read the panel) ----
     sendStatus('Expanding description...');
@@ -177,8 +187,11 @@
       transcriptRetries++;
     }
 
+    // No button = the only trustworthy "this video has no captions" signal we
+    // get. Freshly uploaded videos land here until YouTube finishes generating
+    // them, so word it as a wait and let the batch retry on the next pass.
     if (!transcriptBtn) {
-      chrome.runtime.sendMessage({ action: 'error', message: 'Could not find "Show transcript" button. It might not be available for this video.' });
+      chrome.runtime.sendMessage({ action: 'error', message: 'No transcript on YouTube yet — will retry.' });
       return;
     }
 

@@ -93,11 +93,17 @@ document.getElementById('scrapeBtn').addEventListener('click', async () => {
       return;
     }
 
+    // Chrome waits for the injected async script to finish, so this promise
+    // resolves only once content.js has already reported the real outcome via
+    // the 'done'/'error' messages below. Anything set after it would paint over
+    // that outcome — which is how a failure came to read "Starting process..."
+    // in error red and look like a hang. Say it before injecting, then leave
+    // the status alone.
+    statusDiv.textContent = 'Starting process...';
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       files: ['content.js']
     });
-    statusDiv.textContent = 'Starting process...';
   } catch (error) {
     statusDiv.textContent = 'Error: ' + error.message;
     statusDiv.style.color = '#ff4444';
