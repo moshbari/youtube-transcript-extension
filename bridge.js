@@ -1,4 +1,4 @@
-// bridge.js — injected on our own web apps (pulltranscript, devrant, tella, wisekid).
+// bridge.js — injected on our own web apps (pulltranscript, devrant, tella, wisekid, painfinder).
 //
 // Lets a web app pull YouTube transcripts THROUGH this
 // extension, which runs in the user's own browser (their residential IP +
@@ -18,7 +18,7 @@
   // Accept handshakes from any of our own web apps. tella-to-youtube uses this
   // to push a whole batch of freshly-uploaded YouTube links straight into the
   // extension's batch scraper (no copy-paste).
-  const APPS = ['pulltranscript-app', 'tella-app', 'wisekid-app'];
+  const APPS = ['pulltranscript-app', 'tella-app', 'wisekid-app', 'painfinder-app'];
   const version = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '';
 
   const announce = () => {
