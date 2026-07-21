@@ -218,13 +218,34 @@ function restoreFocus(q) {
 const COUNCIL_BACKEND = 'https://tellatotube.up.railway.app';
 
 async function sendToCouncil({ transcript, prospectName = '', notes = '', situation = '', lang }) {
-  const res = await fetch(`${COUNCIL_BACKEND}/followup/start`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ transcript, prospectName, notes, situation, lang }),
-  });
-  const data = await res.json();
-  if (!data.ok) throw new Error(data.error || 'Could not send to the Council.');
-  return { prospectName: data.prospectName || '' };
+  // The server on Railway can briefly serve an HTML platform page (502/503/504)
+  // during a cold start or restart. Blindly calling res.json() on that used to
+  // kill the whole run with "Unexpected token '<'". Read the body as text, and
+  // retry a few times on any transient non-JSON / 5xx blip before giving up.
+  const attempts = 3;
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(`${COUNCIL_BACKEND}/followup/start`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transcript, prospectName, notes, situation, lang }),
+      });
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // Not JSON — almost always a temporary Railway error page. Retry.
+        throw new Error(`The Council server was briefly unavailable (HTTP ${res.status}).`);
+      }
+      if (!res.ok || !data.ok) throw new Error(data.error || `Could not send to the Council (HTTP ${res.status}).`);
+      return { prospectName: data.prospectName || '' };
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+    }
+  }
+  throw lastErr || new Error('Could not send to the Council.');
 }
 
 async function cancelBatch() {
