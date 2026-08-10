@@ -182,6 +182,11 @@ async function startBatch(urls, opts = {}) {
     pass: 1,
     maxPasses: BATCH_MAX_PASSES,
     skipped,
+    // 🎙️ { youtubeUrl: podcastProjectId } for links uploaded with "Also send to
+    // the Podcast Editor". Lives on the queue (which is chrome.storage-backed),
+    // so it survives the service worker being shut down during the hours
+    // YouTube can take to produce captions.
+    podcastJobs: opts.podcastJobs || {},
     returnToTabId, returnToWindowId,
     // Don't scrape immediately — wait one interval so YouTube has time to
     // generate captions. The heartbeat alarm's first tick (BATCH_RETRY_MIN
@@ -246,6 +251,40 @@ async function sendToCouncil({ transcript, prospectName = '', notes = '', situat
     }
   }
   throw lastErr || new Error('Could not send to the Council.');
+}
+
+// ---- 🎙️ Send a transcript to the Podcast Brain (fire-and-forget) ----
+// Same shape and the same retry reasoning as sendToCouncil above: Railway can
+// briefly serve an HTML error page on a cold start, and calling res.json() on
+// that used to kill a whole run.
+//
+// The transcript sent here is the TIMESTAMPED one. The Council wants flowing
+// text, but hooks and cuts are time ranges — without the cue times there is
+// nothing to cut.
+async function sendToPodcastEditor({ devrantJobId, transcript, youtubeUrl }) {
+  const attempts = 3;
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      const res = await fetch(`${COUNCIL_BACKEND}/podcast/analyze`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ devrantJobId, transcript, youtubeUrl }),
+      });
+      const text = await res.text();
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`The podcast server was briefly unavailable (HTTP ${res.status}).`);
+      }
+      if (!res.ok || !data.ok) throw new Error(data.error || `Could not send to the Podcast Editor (HTTP ${res.status}).`);
+      return { projectUrl: data.projectUrl || '' };
+    } catch (e) {
+      lastErr = e;
+      if (i < attempts - 1) await new Promise(r => setTimeout(r, 3000 * (i + 1)));
+    }
+  }
+  throw lastErr || new Error('Could not send to the Podcast Editor.');
 }
 
 async function cancelBatch() {
@@ -318,8 +357,11 @@ async function recordResultAndAdvance(result) {
   }
   q.index++;
   q.lastInjectedIndex = -1;     // allow next index's onUpdated to inject
+  const name = result.title || result.videoId || 'done';
   q.lastMessage = result.status === 'success'
-    ? `✓ ${result.title || result.videoId || 'done'}`
+    ? (result.podcastSent ? `✓ ${name} → 🎙️ Podcast Editor`
+      : result.podcastError ? `✓ ${name} — but the Podcast Editor hand-off failed: ${result.podcastError}`
+      : `✓ ${name}`)
     : `✗ ${result.error || 'failed'}`;
   await setQueue(q);
   chrome.alarms.clear(TIMEOUT_ALARM);
@@ -541,6 +583,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         lines: request.lines,
       };
 
+      // 🎙️ Is this video bound to a podcast project? If so the transcript goes
+      // to the Podcast Brain, which writes the hooks, the cuts and the Facebook
+      // post into the editor. Fire-and-forget — the analysis takes up to twenty
+      // minutes on the server and reports itself there.
+      const podcastJobId = q.podcastJobs && (q.podcastJobs[base.url] || q.podcastJobs[request.url]);
+      if (podcastJobId) {
+        chrome.alarms.clear(TIMEOUT_ALARM);
+        try {
+          await sendToPodcastEditor({
+            devrantJobId: podcastJobId,
+            transcript: request.text || '',   // timestamped, not plainText
+            youtubeUrl: base.url,
+          });
+          await recordResultAndAdvance({ ...base, podcastSent: true });
+        } catch (e) {
+          // The transcript still downloaded — only the hand-off failed. Say so
+          // rather than letting the episode look finished.
+          await recordResultAndAdvance({ ...base, podcastError: e.message });
+        }
+        return;
+      }
+
       // Plain "scrape only" batch — record and move on, as before.
       if (!q.toCouncil) { await recordResultAndAdvance(base); return; }
 
@@ -666,7 +730,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       sendResponse({ ok: false, error: 'A batch is already running — wait for it to finish.' });
       return;
     }
-    startBatch(urls, { toCouncil: false });
+    startBatch(urls, { toCouncil: false, podcastJobs: request.podcastJobs || {} });
     sendResponse({ ok: true, accepted: urls.length });
   });
   return true; // async sendResponse

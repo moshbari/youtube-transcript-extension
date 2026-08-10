@@ -40,10 +40,14 @@
     if (msg.type === 'scrapeBatch') {
       const requestId = msg.requestId;
       const urls = Array.isArray(msg.urls) ? msg.urls : [];
+      // 🎙️ Optional { youtubeUrl: podcastProjectId }. Present when the video was
+      // uploaded with "Also send to the Podcast Editor" ticked, so once the
+      // captions exist we know which project the transcript belongs to.
+      const podcastJobs = (msg.podcastJobs && typeof msg.podcastJobs === 'object') ? msg.podcastJobs : {};
       const reply = (payload) =>
         window.postMessage({ source: EXT, type: 'batchAccepted', requestId, ...payload }, window.location.origin);
       try {
-        chrome.runtime.sendMessage({ action: 'bridgeBatch', urls }, (resp) => {
+        chrome.runtime.sendMessage({ action: 'bridgeBatch', urls, podcastJobs }, (resp) => {
           if (chrome.runtime.lastError) {
             reply({ ok: false, error: chrome.runtime.lastError.message || 'Extension error' });
             return;
