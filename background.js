@@ -128,6 +128,37 @@ async function broadcastState(extra = {}) {
   broadcast('batchStatus', { state: q, ...extra });
 }
 
+// ---------- 🎙️ podcast projects are matched by VIDEO ID, never by URL ----------
+//
+// The upload page hands over links in the short form (https://youtu.be/abc123),
+// but the transcript is scraped on the canonical watch page, so content.js
+// reports back https://www.youtube.com/watch?v=abc123. Matching the two as
+// strings missed EVERY time: the transcript downloaded fine, the Podcast Brain
+// was never called, and nothing anywhere said so — the episode just sat in the
+// editor with no hooks, no cuts and no post.
+//
+// The video id is the only stable name a video has, so the map is keyed on it
+// the moment the batch is queued.
+function normalizePodcastJobs(raw) {
+  const out = {};
+  for (const [url, jobId] of Object.entries(raw || {})) {
+    if (!jobId) continue;
+    const id = extractYtId(url);
+    if (id) out[id] = jobId;      // keyed by id from here on
+    else out[url] = jobId;        // unrecognisable link — keep it rather than lose it
+  }
+  return out;
+}
+
+// Find the podcast project a finished video belongs to. Tries the id first,
+// then the raw URLs, so a batch queued by an older version still resolves.
+function podcastJobFor(q, { videoId, url, altUrl }) {
+  const map = q && q.podcastJobs;
+  if (!map) return null;
+  const id = videoId || extractYtId(url || '') || extractYtId(altUrl || '');
+  return (id && map[id]) || (url && map[url]) || (altUrl && map[altUrl]) || null;
+}
+
 // ---------- start / cancel ----------
 async function startBatch(urls, opts = {}) {
   // If a batch is already in progress, refuse — popup should not let this happen,
@@ -138,6 +169,7 @@ async function startBatch(urls, opts = {}) {
   // De-dupe the incoming list by video ID, then drop anything we've already
   // downloaded in a previous run (unless the caller forces a re-scrape).
   const downloaded = opts.force ? {} : await getDownloadedIds();
+  const podcastJobs = normalizePodcastJobs(opts.podcastJobs);
   const seen = new Set();
   const fresh = [];
   let skipped = 0;
@@ -146,6 +178,13 @@ async function startBatch(urls, opts = {}) {
     const key = id || u;
     if (seen.has(key)) continue;
     seen.add(key);
+    // 🎙️ Never dedupe an episode that is bound to a podcast project. The
+    // "already downloaded" memory exists to avoid re-fetching a transcript we
+    // have on disk — but a podcast episode's whole point is the hand-off to the
+    // Brain, not the file. Skipping it here meant an episode whose transcript
+    // once downloaded could never be sent to the editor again: the page said
+    // "Nothing new" and the project stayed empty forever.
+    if (id && podcastJobs[id]) { fresh.push(u); continue; }
     if (id && downloaded[id]) { skipped++; continue; }
     fresh.push(u);
   }
@@ -182,11 +221,12 @@ async function startBatch(urls, opts = {}) {
     pass: 1,
     maxPasses: BATCH_MAX_PASSES,
     skipped,
-    // 🎙️ { youtubeUrl: podcastProjectId } for links uploaded with "Also send to
+    // 🎙️ { videoId: podcastProjectId } for links uploaded with "Also send to
     // the Podcast Editor". Lives on the queue (which is chrome.storage-backed),
     // so it survives the service worker being shut down during the hours
-    // YouTube can take to produce captions.
-    podcastJobs: opts.podcastJobs || {},
+    // YouTube can take to produce captions. Keyed by id, not URL — see
+    // normalizePodcastJobs above for why that mattered.
+    podcastJobs,
     returnToTabId, returnToWindowId,
     // Don't scrape immediately — wait one interval so YouTube has time to
     // generate captions. The heartbeat alarm's first tick (BATCH_RETRY_MIN
@@ -587,7 +627,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // to the Podcast Brain, which writes the hooks, the cuts and the Facebook
       // post into the editor. Fire-and-forget — the analysis takes up to twenty
       // minutes on the server and reports itself there.
-      const podcastJobId = q.podcastJobs && (q.podcastJobs[base.url] || q.podcastJobs[request.url]);
+      const podcastJobId = podcastJobFor(q, {
+        videoId: request.videoId || base.videoId,
+        url: base.url,
+        altUrl: request.url,
+      });
       if (podcastJobId) {
         chrome.alarms.clear(TIMEOUT_ALARM);
         try {
