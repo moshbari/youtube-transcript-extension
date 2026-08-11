@@ -104,6 +104,23 @@
     return null;
   }
 
+  // YouTube's transcript panel puts a screen-reader time label inside the same
+  // element as the words ("0 seconds আসসালামু…", "33 minutes, 33 seconds …").
+  // Scraped as-is it becomes fake speech at the top of every line, which then
+  // gets read as the transcript by the Podcast Brain and the Council.
+  //
+  // Only strips the phrase when it adds up to this segment's own timestamp, so
+  // someone actually saying "five seconds" keeps their words.
+  function stripSpokenTime(text, timestamp) {
+    const m = text.match(/^(?:(\d+)\s*hours?,?\s*)?(?:(\d+)\s*minutes?,?\s*)?(?:(\d+)\s*seconds?)\s+/i);
+    if (!m) return text;
+    const spoken = (+m[1] || 0) * 3600 + (+m[2] || 0) * 60 + (+m[3] || 0);
+    const p = String(timestamp).split(':').map(Number);
+    if (p.some(isNaN)) return text;
+    const stamp = p.length === 3 ? p[0] * 3600 + p[1] * 60 + p[2] : p[0] * 60 + p[1];
+    return spoken === stamp ? text.slice(m[0].length) : text;
+  }
+
   // Build the .txt + notify the background. Shared by both scrape paths.
   function emitTranscript(transcriptLines) {
     const videoTitle = document.querySelector('yt-formatted-string.ytd-watch-metadata, h1.ytd-watch-metadata yt-formatted-string, h1.title yt-formatted-string')?.innerText?.trim()
@@ -274,7 +291,8 @@
       }
 
       if (timestamp && text) {
-        transcriptLines.push({ timestamp, text });
+        const clean = stripSpokenTime(text, timestamp);
+        if (clean) transcriptLines.push({ timestamp, text: clean });
       }
     }
 
