@@ -14,14 +14,37 @@
 // The page never needs the extension's ID — presence is announced here.
 
 (function () {
+  // Injected twice? Content scripts are auto-injected on page load AND
+  // re-injected by background.js when the extension updates, so a page can get
+  // two copies. Two live listeners means two replies to every request, and the
+  // app resolves on whichever lands first. One bridge per frame.
+  if (window.__ytScraperBridge) return;
+  window.__ytScraperBridge = true;
+
   const EXT = 'yt-scraper-ext';
   // Accept handshakes from any of our own web apps. tella-to-youtube uses this
   // to push a whole batch of freshly-uploaded YouTube links straight into the
   // extension's batch scraper (no copy-paste).
   const APPS = ['pulltranscript-app', 'tella-app', 'wisekid-app', 'painfinder-app'];
-  const version = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '';
+  // Is this bridge still attached to a living extension? When the extension is
+  // reloaded or updated, every content script already sitting in an open page is
+  // ORPHANED: the code keeps running but `chrome.runtime` is torn out from under
+  // it. Touching it then throws "Cannot read properties of undefined (reading
+  // 'sendMessage')" — which is what the apps were showing their users.
+  const alive = () => {
+    try { return !!(chrome && chrome.runtime && chrome.runtime.id); } catch (e) { return false; }
+  };
+  const STALE_MSG = 'The extension was just updated. Reload this page (Cmd/Ctrl+R) and try again.';
+
+  let version = '';
+  try {
+    version = (chrome.runtime.getManifest && chrome.runtime.getManifest().version) || '';
+  } catch (e) { /* orphaned before we even started — stay quiet */ }
 
   const announce = () => {
+    // Never announce from an orphaned bridge — the app would show itself as
+    // connected to an extension that cannot answer a single request.
+    if (!alive()) return;
     window.postMessage({ source: EXT, type: 'ready', version }, window.location.origin);
   };
 
@@ -46,6 +69,7 @@
       const podcastJobs = (msg.podcastJobs && typeof msg.podcastJobs === 'object') ? msg.podcastJobs : {};
       const reply = (payload) =>
         window.postMessage({ source: EXT, type: 'batchAccepted', requestId, ...payload }, window.location.origin);
+      if (!alive()) { reply({ ok: false, stale: true, error: STALE_MSG }); return; }
       try {
         chrome.runtime.sendMessage({ action: 'bridgeBatch', urls, podcastJobs }, (resp) => {
           if (chrome.runtime.lastError) {
@@ -55,7 +79,7 @@
           reply(resp || { ok: false, error: 'No response from extension' });
         });
       } catch (e) {
-        reply({ ok: false, error: (e && e.message) || 'Extension call failed' });
+        reply({ ok: false, stale: !alive(), error: alive() ? ((e && e.message) || 'Extension call failed') : STALE_MSG });
       }
       return;
     }
@@ -75,6 +99,7 @@
         reply(payload);
       };
 
+      if (!alive()) { done({ ok: false, stale: true, error: STALE_MSG }); return; }
       try {
         chrome.runtime.sendMessage({ action: 'bridgeScrape', url: msg.url }, (resp) => {
           if (chrome.runtime.lastError) {
@@ -94,7 +119,7 @@
           });
         });
       } catch (e) {
-        done({ ok: false, error: (e && e.message) || 'Extension call failed' });
+        done({ ok: false, stale: !alive(), error: alive() ? ((e && e.message) || 'Extension call failed') : STALE_MSG });
       }
     }
   });

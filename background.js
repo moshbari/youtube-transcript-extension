@@ -1121,3 +1121,45 @@ getQueue().then((q) => {
   ensureBatchRetryAlarm();
   if (!q.waiting) processNext();
 });
+
+// ---------- Re-attach the bridge after an update ----------
+// Reloading or updating the extension orphans every content script already
+// sitting in an open tab: the code stays, its `chrome.runtime` does not. The
+// user's page then looks connected but fails on the first click, and the only
+// cure was for them to know to press Cmd+R. Instead, re-inject bridge.js into
+// the app tabs that are already open, so the connection heals itself. The
+// fresh copy announces 'ready' on load, so the page's status flips too.
+//
+// Needs no new permissions: `scripting` + `tabs` are already granted, and every
+// URL below is already a host_permission (they mirror manifest content_scripts).
+const BRIDGE_URLS = [
+  'https://pulltranscript.com/*',
+  'https://www.pulltranscript.com/*',
+  'https://devrant.99dfy.com/*',
+  'https://tellatotube.up.railway.app/*',
+  'https://wisekid.99dfy.com/*',
+  'https://painfinder.99dfy.com/*',
+];
+
+async function reattachBridge(reason) {
+  try {
+    const tabs = await chrome.tabs.query({ url: BRIDGE_URLS });
+    for (const tab of tabs) {
+      if (!tab.id) continue;
+      try {
+        // bridge.js guards against a second copy, so injecting into a tab that
+        // already has a healthy bridge is a no-op rather than a double listener.
+        await chrome.scripting.executeScript({ target: { tabId: tab.id }, files: ['bridge.js'] });
+      } catch (e) {
+        // A tab can be mid-navigation or discarded; nothing to do but skip it.
+        console.warn('bridge re-attach skipped for tab', tab.id, e?.message || e);
+      }
+    }
+    if (tabs.length) console.log(`[bridge] re-attached to ${tabs.length} tab(s) after ${reason}`);
+  } catch (e) {
+    console.warn('bridge re-attach failed:', e?.message || e);
+  }
+}
+
+chrome.runtime.onInstalled.addListener((details) => reattachBridge(details?.reason || 'install'));
+chrome.runtime.onStartup.addListener(() => reattachBridge('browser startup'));
