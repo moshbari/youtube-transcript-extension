@@ -1273,7 +1273,11 @@ async function pocketPollOnce() {
           deviceId,
           jobId: job.id,
           ok,
-          text: (result && result.plainText) || '',
+          // `text` is content.js's fullText — title, video URL, blank line, then
+          // "0:00 - line" per row. That is exactly what the .txt download holds,
+          // so the phone hands back the same thing the computer does.
+          text: (result && result.text) || '',
+          plain: (result && result.plainText) || '',
           segments: (result && result.segments) || [],
           title: (result && result.title) || '',
           error: ok ? '' : ((result && result.error) ||
