@@ -1226,6 +1226,7 @@ async function pocketPollOnce() {
   if (pocketPolling) return;
   if (!(await isPocketEnabled())) { await stopPocket(); return; }
   pocketPolling = true;
+  let keepListening = false;   // only re-enter if we actually reached the server
 
   try {
     const deviceId = await getPocketDeviceId();
@@ -1237,15 +1238,20 @@ async function pocketPollOnce() {
         body: JSON.stringify({ deviceId, name: 'This computer' }),
       });
     } catch (e) {
-      // No network / server asleep. The alarm will try again in 30s; the phone
-      // shows "computer asleep" in the meantime, which is honest enough.
+      // No network, or the queue is down. Back off to the alarm rather than
+      // spinning on a dead socket; the phone shows "computer asleep" meanwhile.
       return;
     }
     if (!res.ok) return;
 
     const data = await res.json().catch(() => null);
     const job = data && data.job;
-    if (!job) return;                       // idle timeout — nothing to do
+
+    // The server answered, so go straight back in once we're done here.
+    // Without this we'd stop listening for up to 30s after every idle timeout,
+    // and a link sent from the phone inside that gap would just sit there.
+    keepListening = true;
+    if (!job) return;                       // idle timeout — nothing waiting
 
     await bumpPocketStats({ lastAt: Date.now(), lastTitle: `Working on ${job.videoId}…` });
 
@@ -1286,11 +1292,11 @@ async function pocketPollOnce() {
     );
   } finally {
     pocketPolling = false;
+    // Covers every exit path: finished a job, or idled out with nothing waiting.
+    if (keepListening) {
+      isPocketEnabled().then((on) => { if (on) pocketPollOnce(); });
+    }
   }
-
-  // A job just went through, so another may be waiting. Go straight back in
-  // rather than idling until the next alarm.
-  if (await isPocketEnabled()) pocketPollOnce();
 }
 
 chrome.alarms.onAlarm.addListener((alarm) => {
