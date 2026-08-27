@@ -1,7 +1,7 @@
 # Chrome Web Store — Submission Pack
 
 Everything below is copy-paste ready for the Chrome Web Store dashboard.
-Upload file: **yt-transcript-scraper-v2.3.zip** (in this folder).
+Upload file: **youtube-transcript-extension-v4.5.zip** (in this folder).
 
 ---
 
@@ -66,6 +66,11 @@ Everything happens locally in your browser. The extension reads transcripts on Y
 | **Host permission: studio.youtube.com** | Used by the "Names → Links" feature: when the user is on their own YouTube Studio Content page, the extension reads the list of their videos (title and link) so it can find the YouTube URL for videos the user names. Only runs on the user's own Studio page, reads only their own video list, and sends nothing off the device. |
 | **Host permission: tellatotube.up.railway.app** | Used only by the optional "Tella → Council" feature: when the user starts that flow, the extension sends the Tella call link they provide to this backend to upload it to YouTube and retrieve a follow-up. Contacted only when the user explicitly starts that flow. |
 | **Host permission: pulltranscript.com** | Lets the companion web app PullTranscript.com request a YouTube transcript through the extension. When the user is on pulltranscript.com and submits a YouTube link, the page asks the extension to fetch that video's transcript (using the same on-device YouTube scraping as the popup) and hands the text back to the page. Runs only on pulltranscript.com, acts only on a YouTube link the user submits, and uses no remote code. |
+| **identity** | Used only by "Connect your YouTube" in the Tella flow, so uploads go to the user's own channel. Runs Google's OAuth screen on demand; the extension never sees or stores a password. |
+| **Host permission: devrant.99dfy.com** | Same companion-app bridge as pulltranscript.com: when the user submits a YouTube link on their own devrant page, the page asks the extension to fetch that video's transcript and hands the text back. Acts only on a link the user submits. |
+| **Host permission: wisekid.99dfy.com** | Same companion-app bridge: the user's WiseKid page requests the transcript of a YouTube video the user chose, so it can build a quiz from it. Acts only on a link the user submits. |
+| **Host permission: painfinder.99dfy.com** | Same companion-app bridge: the user's Pain Finder page requests the transcript of a YouTube video the user submits, for research. Acts only on a link the user submits. |
+| **Host permission: pockettranscript.up.railway.app** | Used by the optional "Phone" feature, which the user turns on and pairs with a 6-digit code. Once paired, the extension checks this queue for YouTube links the user sent from their own phone, scrapes each on this device exactly as the popup does, and returns the transcript to that same paired queue. It contacts only this one address, carries only the user's own links and transcripts, and can be switched off in the popup. |
 
 **Single purpose** (paste into the "Single purpose" box)
 ```
