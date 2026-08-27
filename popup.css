@@ -689,6 +689,37 @@ p {
 .pocket-dot{width:9px;height:9px;border-radius:50%;background:#5b6b7d;flex:none}
 .pocket-dot.on{background:#00ff88;box-shadow:0 0 0 3px rgba(0,255,136,.16)}
 .pocket-dot.off{background:#ff4444}
+#pocketPairBtn {
+  /* Matches #scrapeBtn — it was falling through to Chrome's native button. */
+  background: linear-gradient(135deg, #ff0000 0%, #aa0000 100%);
+  color: #fff;
+  border: none;
+  border-radius: 10px;
+  padding: 14px 24px;
+  font-size: 16px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  width: 100%;
+  box-shadow: 0 4px 12px rgba(255, 0, 0, .3);
+  transition: all .2s cubic-bezier(.4, 0, .2, 1);
+}
+#pocketPairBtn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(255, 0, 0, .4);
+}
+#pocketPairBtn:active {
+  transform: translateY(1px);
+  box-shadow: 0 2px 8px rgba(255, 0, 0, .3);
+}
+#pocketPairBtn:disabled {
+  background: #444;
+  color: #888;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none;
+}
+
 .pocket-code-box{
   margin:12px 0; padding:14px; border-radius:10px;
   background:#11161d; border:1px solid #2a3542; text-align:center;
