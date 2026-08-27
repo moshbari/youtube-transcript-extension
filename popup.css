@@ -680,3 +680,29 @@ p {
 #batchLang:focus { outline: none; border-color: #ff0000; }
 
 .batch-council-ok { margin-top: 8px; font-size: 12px; color: #00ff88; }
+
+/* ---- 📱 Phone tab ---- */
+.pocket-status-row{
+  display:flex; align-items:center; gap:8px;
+  font-size:13px; margin:10px 0 12px; color:#c9d4e0;
+}
+.pocket-dot{width:9px;height:9px;border-radius:50%;background:#5b6b7d;flex:none}
+.pocket-dot.on{background:#00ff88;box-shadow:0 0 0 3px rgba(0,255,136,.16)}
+.pocket-dot.off{background:#ff4444}
+.pocket-code-box{
+  margin:12px 0; padding:14px; border-radius:10px;
+  background:#11161d; border:1px solid #2a3542; text-align:center;
+}
+.pocket-code{
+  font-size:34px; font-weight:700; letter-spacing:.3em;
+  color:#00ff88; font-variant-numeric:tabular-nums;
+  text-indent:.3em; /* letter-spacing pads the right edge — pull it back centre */
+}
+.pocket-code-hint{margin-top:8px;font-size:12px;color:#8fa0b3;line-height:1.5}
+.pocket-code-hint b{color:#c9d4e0;word-break:break-all}
+.pocket-stats{font-size:12px;color:#8fa0b3;margin:10px 0;line-height:1.5}
+.pocket-toggle{
+  display:flex;align-items:center;gap:8px;
+  font-size:12.5px;color:#8fa0b3;margin-top:12px;cursor:pointer;
+}
+.pocket-toggle input{width:auto;margin:0;cursor:pointer}

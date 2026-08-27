@@ -1163,3 +1163,197 @@ async function reattachBridge(reason) {
 
 chrome.runtime.onInstalled.addListener((details) => reattachBridge(details?.reason || 'install'));
 chrome.runtime.onStartup.addListener(() => reattachBridge('browser startup'));
+
+// =====================================================================
+//  📱 PocketTranscript — this browser as the phone's transcript worker
+// =====================================================================
+//  A phone can't run an extension, and nothing outside this Mac can reach
+//  into its Chrome. So the phone never calls us and we never call the phone.
+//  We both talk to a queue instead:
+//
+//    phone --> [ pockettranscript.up.railway.app ] <-- we long-poll here
+//
+//  The poll hangs open for ~25s, so a link sent from the phone lands here in
+//  well under a second instead of waiting for the next alarm tick. The alarm
+//  is only there to restart the poll after Chrome kills the service worker.
+//  Same shape as the Tella loop above, which has been reliable for months.
+
+const POCKET_BACKEND   = 'https://pockettranscript.up.railway.app';
+const POCKET_DEVICE_KEY = 'pocketDeviceId';
+const POCKET_ON_KEY     = 'pocketEnabled';
+const POCKET_STATS_KEY  = 'pocketStats';
+const POCKET_ALARM      = 'pocketPoll';
+const POCKET_POLL_MS    = 30000;   // must outlast the server's 25s long-poll
+
+let pocketPolling = false;         // guards against two overlapping polls
+
+async function getPocketDeviceId() {
+  const r = await chrome.storage.local.get(POCKET_DEVICE_KEY);
+  if (r[POCKET_DEVICE_KEY]) return r[POCKET_DEVICE_KEY];
+  // 32 hex chars. This id IS the shared secret between this Chrome and the
+  // phone, so it comes from crypto, never from Math.random.
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  const id = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await chrome.storage.local.set({ [POCKET_DEVICE_KEY]: id });
+  return id;
+}
+
+async function isPocketEnabled() {
+  const r = await chrome.storage.local.get(POCKET_ON_KEY);
+  return r[POCKET_ON_KEY] !== false;   // ON unless the user turned it off
+}
+
+async function bumpPocketStats(patch) {
+  const r = await chrome.storage.local.get(POCKET_STATS_KEY);
+  const stats = r[POCKET_STATS_KEY] || { done: 0, failed: 0, lastAt: 0, lastTitle: '' };
+  Object.assign(stats, patch);
+  await chrome.storage.local.set({ [POCKET_STATS_KEY]: stats });
+  broadcast('pocketStats', { stats });
+}
+
+function ensurePocketAlarm() {
+  // 0.5 min is Chrome's floor. The alarm's only job is to revive the loop
+  // after the service worker is torn down — the long-poll does the real work.
+  chrome.alarms.create(POCKET_ALARM, { periodInMinutes: 0.5 });
+}
+
+async function stopPocket() {
+  chrome.alarms.clear(POCKET_ALARM);
+}
+
+// One trip round the loop: ask for work, do it, post it back, go again.
+async function pocketPollOnce() {
+  if (pocketPolling) return;
+  if (!(await isPocketEnabled())) { await stopPocket(); return; }
+  pocketPolling = true;
+
+  try {
+    const deviceId = await getPocketDeviceId();
+    let res;
+    try {
+      res = await fetch(`${POCKET_BACKEND}/api/desktop/poll`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId, name: 'This computer' }),
+      });
+    } catch (e) {
+      // No network / server asleep. The alarm will try again in 30s; the phone
+      // shows "computer asleep" in the meantime, which is honest enough.
+      return;
+    }
+    if (!res.ok) return;
+
+    const data = await res.json().catch(() => null);
+    const job = data && data.job;
+    if (!job) return;                       // idle timeout — nothing to do
+
+    await bumpPocketStats({ lastAt: Date.now(), lastTitle: `Working on ${job.videoId}…` });
+
+    // Reuse the exact scraper the popup and the Tella loop use. It opens the
+    // watch page in a background tab, scrapes, and restores the user's focus.
+    let result;
+    try {
+      result = await scrapeYoutube(job.videoId);
+    } catch (e) {
+      result = { ok: false, error: (e && e.message) || 'Scrape failed' };
+    }
+
+    const ok = !!(result && result.ok && (result.plainText || '').trim().length > 0);
+    try {
+      await fetch(`${POCKET_BACKEND}/api/desktop/result`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          deviceId,
+          jobId: job.id,
+          ok,
+          text: (result && result.plainText) || '',
+          segments: (result && result.segments) || [],
+          title: (result && result.title) || '',
+          error: ok ? '' : ((result && result.error) ||
+            'No transcript came back — this video may not have captions yet.'),
+        }),
+      });
+    } catch (e) {
+      // The transcript is lost, but the phone's Retry button re-queues it.
+      return;
+    }
+
+    const stats = (await chrome.storage.local.get(POCKET_STATS_KEY))[POCKET_STATS_KEY] || {};
+    await bumpPocketStats(
+      ok ? { done: (stats.done || 0) + 1, lastAt: Date.now(), lastTitle: result.title || job.videoId }
+         : { failed: (stats.failed || 0) + 1, lastAt: Date.now(), lastTitle: `Failed: ${job.videoId}` }
+    );
+  } finally {
+    pocketPolling = false;
+  }
+
+  // A job just went through, so another may be waiting. Go straight back in
+  // rather than idling until the next alarm.
+  if (await isPocketEnabled()) pocketPollOnce();
+}
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === POCKET_ALARM) pocketPollOnce();
+});
+
+// --- popup <-> background messages for the 📱 Phone tab ---
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (!request || !request.action || !request.action.startsWith('pocket')) return;
+
+  if (request.action === 'pocketGetState') {
+    (async () => {
+      const deviceId = await getPocketDeviceId();
+      const enabled = await isPocketEnabled();
+      const r = await chrome.storage.local.get(POCKET_STATS_KEY);
+      sendResponse({ ok: true, deviceId, enabled, stats: r[POCKET_STATS_KEY] || {} });
+    })();
+    return true;
+  }
+
+  if (request.action === 'pocketSetEnabled') {
+    (async () => {
+      await chrome.storage.local.set({ [POCKET_ON_KEY]: !!request.enabled });
+      if (request.enabled) { ensurePocketAlarm(); pocketPollOnce(); }
+      else await stopPocket();
+      sendResponse({ ok: true, enabled: !!request.enabled });
+    })();
+    return true;
+  }
+
+  if (request.action === 'pocketPairCode') {
+    (async () => {
+      try {
+        const deviceId = await getPocketDeviceId();
+        const res = await fetch(`${POCKET_BACKEND}/api/desktop/paircode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ deviceId, name: 'This computer' }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error || 'Could not get a code.');
+        // Getting a code means a phone is about to connect — make sure we're listening.
+        await chrome.storage.local.set({ [POCKET_ON_KEY]: true });
+        ensurePocketAlarm();
+        pocketPollOnce();
+        sendResponse({ ok: true, code: data.code, expiresInMs: data.expiresInMs, url: POCKET_BACKEND });
+      } catch (e) {
+        sendResponse({ ok: false, error: (e && e.message) || 'Could not reach PocketTranscript.' });
+      }
+    })();
+    return true;
+  }
+});
+
+// Start listening on install and on every browser start, so the phone works
+// the moment the Mac wakes up without anyone opening the popup.
+function bootPocket() {
+  isPocketEnabled().then((on) => {
+    if (!on) return;
+    ensurePocketAlarm();
+    pocketPollOnce();
+  });
+}
+chrome.runtime.onInstalled.addListener(bootPocket);
+chrome.runtime.onStartup.addListener(bootPocket);
+bootPocket();

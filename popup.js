@@ -47,6 +47,8 @@ function activateMode(mode) {
   document.getElementById('batchMode').classList.toggle('active', mode === 'batch');
   document.getElementById('namesMode').classList.toggle('active', mode === 'names');
   document.getElementById('tellaMode').classList.toggle('active', mode === 'tella');
+  document.getElementById('phoneMode').classList.toggle('active', mode === 'phone');
+  if (mode === 'phone') refreshPocket();
 }
 document.querySelectorAll('.mode-tab').forEach(tab => {
   tab.addEventListener('click', () => activateMode(tab.dataset.mode));
@@ -981,3 +983,95 @@ setInterval(() => {
     if (jobs.length) renderTellaJobs(jobs);
   });
 }, 4000);
+
+// =====================================================================
+//  📱 Phone tab — pair a phone, then let it queue work to this computer
+// =====================================================================
+const pocketPairBtn  = document.getElementById('pocketPairBtn');
+const pocketCodeBox  = document.getElementById('pocketCodeBox');
+const pocketCodeEl   = document.getElementById('pocketCode');
+const pocketExpiryEl = document.getElementById('pocketExpiry');
+const pocketStatsEl  = document.getElementById('pocketStats');
+const pocketDot      = document.getElementById('pocketDot');
+const pocketStatusTx = document.getElementById('pocketStatusText');
+const pocketToggle   = document.getElementById('pocketEnabled');
+
+let pocketExpiryTimer = null;
+
+function paintPocket(state) {
+  if (!pocketDot) return;
+  const on = state.enabled !== false;
+  pocketToggle.checked = on;
+  pocketDot.className = 'pocket-dot ' + (on ? 'on' : 'off');
+  pocketStatusTx.textContent = on
+    ? 'Listening for your phone'
+    : 'Turned off — your phone can’t reach this computer';
+
+  const s = state.stats || {};
+  if (s.done || s.failed) {
+    const bits = [];
+    if (s.done) bits.push(`${s.done} transcript${s.done === 1 ? '' : 's'} sent to your phone`);
+    if (s.failed) bits.push(`${s.failed} failed`);
+    pocketStatsEl.textContent = bits.join(' · ') + (s.lastTitle ? ` — last: ${s.lastTitle}` : '');
+  } else {
+    pocketStatsEl.textContent = on ? 'Nothing requested yet.' : '';
+  }
+}
+
+function refreshPocket() {
+  chrome.runtime.sendMessage({ action: 'pocketGetState' }, (resp) => {
+    if (chrome.runtime.lastError || !resp || !resp.ok) return;
+    paintPocket(resp);
+  });
+}
+
+if (pocketPairBtn) {
+  pocketPairBtn.addEventListener('click', () => {
+    pocketPairBtn.disabled = true;
+    pocketPairBtn.textContent = 'Getting a code…';
+    chrome.runtime.sendMessage({ action: 'pocketPairCode' }, (resp) => {
+      pocketPairBtn.disabled = false;
+      pocketPairBtn.textContent = 'Show pairing code';
+      if (chrome.runtime.lastError || !resp || !resp.ok) {
+        pocketStatsEl.textContent = (resp && resp.error) || 'Could not reach PocketTranscript.';
+        return;
+      }
+      pocketCodeEl.textContent = resp.code;
+      pocketCodeBox.style.display = 'block';
+
+      // Count the code down so nobody types a dead one.
+      const dies = Date.now() + (resp.expiresInMs || 600000);
+      clearInterval(pocketExpiryTimer);
+      const tick = () => {
+        const left = dies - Date.now();
+        if (left <= 0) {
+          clearInterval(pocketExpiryTimer);
+          pocketExpiryEl.textContent = ' — expired, tap the button again.';
+          pocketCodeEl.style.opacity = '.35';
+          return;
+        }
+        const m = Math.floor(left / 60000), s = Math.floor((left % 60000) / 1000);
+        pocketExpiryEl.textContent = ` Expires in ${m}:${String(s).padStart(2, '0')}.`;
+      };
+      pocketCodeEl.style.opacity = '1';
+      tick();
+      pocketExpiryTimer = setInterval(tick, 1000);
+      refreshPocket();
+    });
+  });
+}
+
+if (pocketToggle) {
+  pocketToggle.addEventListener('change', () => {
+    chrome.runtime.sendMessage(
+      { action: 'pocketSetEnabled', enabled: pocketToggle.checked },
+      () => refreshPocket()
+    );
+  });
+}
+
+// The background worker tells us when a transcript finishes, so the tab is
+// never stale while the popup happens to be open.
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg && msg.action === 'pocketStats') refreshPocket();
+});

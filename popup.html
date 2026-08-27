@@ -17,6 +17,7 @@
       <button class="mode-tab" data-mode="batch">Batch URLs</button>
       <button class="mode-tab" data-mode="names">Names → Links</button>
       <button class="mode-tab" data-mode="tella">Tella → Council</button>
+      <button class="mode-tab" data-mode="phone">📱 Phone</button>
     </div>
 
     <!-- Single video mode -->
@@ -129,6 +130,34 @@
       <div id="tellaStatus" class="batch-status"></div>
       <div id="tellaResults" class="batch-results"></div>
     </div>
+
+    <!-- 📱 Phone mode — this computer works for your phone -->
+    <div id="phoneMode" class="mode-panel">
+      <p>Send a YouTube link from your phone and this computer grabs the transcript for it. Chrome has to be open — that's the only rule.</p>
+
+      <div class="pocket-status-row">
+        <span id="pocketDot" class="pocket-dot"></span>
+        <span id="pocketStatusText">Listening for your phone…</span>
+      </div>
+
+      <button id="pocketPairBtn">Show pairing code</button>
+
+      <div id="pocketCodeBox" class="pocket-code-box" style="display:none;">
+        <div class="pocket-code" id="pocketCode">000000</div>
+        <div class="pocket-code-hint">
+          Open <b id="pocketUrl">pockettranscript.up.railway.app</b> on your phone and type this code.
+          <span id="pocketExpiry"></span>
+        </div>
+      </div>
+
+      <div id="pocketStats" class="pocket-stats"></div>
+
+      <label class="pocket-toggle">
+        <input type="checkbox" id="pocketEnabled" checked>
+        <span>Let my phone use this computer</span>
+      </label>
+    </div>
+
 
   </div>
   <!-- Sticky version badge: always visible, never scrolls away. Text is set from the manifest in popup.js. -->
