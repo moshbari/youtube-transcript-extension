@@ -25,7 +25,7 @@
   // Accept handshakes from any of our own web apps. tella-to-youtube uses this
   // to push a whole batch of freshly-uploaded YouTube links straight into the
   // extension's batch scraper (no copy-paste).
-  const APPS = ['pulltranscript-app', 'tella-app', 'wisekid-app', 'painfinder-app'];
+  const APPS = ['pulltranscript-app', 'tella-app', 'wisekid-app', 'painfinder-app', 'course99-app'];
   // Is this bridge still attached to a living extension? When the extension is
   // reloaded or updated, every content script already sitting in an open page is
   // ORPHANED: the code keeps running but `chrome.runtime` is torn out from under

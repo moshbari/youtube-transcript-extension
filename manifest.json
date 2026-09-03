@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Scraper by Mosh Bari",
-  "version": "4.5",
+  "version": "4.6",
   "description": "Scrape YouTube transcripts by Mosh Bari: single, batch or by name, Tella call follow-up, podcast auto-edit, or from your phone.",
   "permissions": [
     "activeTab",
@@ -37,7 +37,8 @@
         "https://devrant.99dfy.com/*",
         "https://tellatotube.up.railway.app/*",
         "https://wisekid.99dfy.com/*",
-        "https://painfinder.99dfy.com/*"
+        "https://painfinder.99dfy.com/*",
+        "https://course.99dfy.com/*"
       ],
       "js": [
         "bridge.js"
@@ -54,6 +55,7 @@
     "https://devrant.99dfy.com/*",
     "https://wisekid.99dfy.com/*",
     "https://painfinder.99dfy.com/*",
+    "https://course.99dfy.com/*",
     "https://pockettranscript.up.railway.app/*"
   ]
 }
