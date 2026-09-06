@@ -1137,6 +1137,7 @@ const BRIDGE_URLS = [
   'https://www.pulltranscript.com/*',
   'https://devrant.99dfy.com/*',
   'https://tellatotube.up.railway.app/*',
+  'https://tubedrop.99dfy.com/*',
   'https://wisekid.99dfy.com/*',
   'https://painfinder.99dfy.com/*',
 ];
