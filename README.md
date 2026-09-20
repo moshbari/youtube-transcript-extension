@@ -11,10 +11,11 @@ It also gives you a local `.txt` copy of every transcript you scrape — useful 
 ## Features
 
 - One-click transcript scraping from any YouTube video or Short
-- **Drop in a playlist link and every video in it is scraped** — the playlist page is opened,
-  scrolled to the very end (YouTube lazy-loads past the first ~100 rows) and each video is
-  queued into the batch scraper. Works on your own unlisted/private playlists too, since the
-  rows are read from your own signed-in page — no YouTube Data API, no key, no quota.
+- **Drop in a playlist link and every video in it is scraped** — the whole playlist, not just
+  the first 100. YouTube's playlist page renders only 100 rows and scrolling loads no more, so
+  the extension follows the page's own continuation chain instead (a 534-video playlist comes
+  back in about 2 seconds). Works on your own unlisted/private playlists too, since it all runs
+  in your own signed-in browser — no YouTube Data API, no key, no quota.
 - Automatic re-routing of Shorts into the standard watch player
 - Downloads transcript as `{videoId}_transcript.txt` with video title and URL included
 - In-popup transcript viewer with "Copy All" button
@@ -37,8 +38,8 @@ To update after a code change, click the circular **reload** icon on the extensi
 1. Copy the playlist URL (`https://www.youtube.com/playlist?list=PL…`) — or any watch link that
    carries `&list=…`.
 2. Click the extension icon → **Batch URLs** tab → paste it.
-3. Click **Load playlist & scrape all**. The playlist opens in a tab, scrolls itself to the bottom,
-   and its videos fill the box; the batch then runs through them one by one.
+3. Click **Load playlist & scrape all**. The playlist opens in a tab, every video in it fills the
+   box, and the batch then runs through them one by one.
    YouTube *Mixes* (`list=RD…`) are skipped — they're auto-generated and never end.
 
 ### Regular YouTube video

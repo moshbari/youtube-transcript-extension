@@ -796,10 +796,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 // =====================================================================
 //  Playlist expansion — one playlist URL -> every video URL in it.
 // =====================================================================
-//  Opens the playlist page in a real tab and lets playlist.js scroll it
-//  to the end, because YouTube lazy-loads past the first ~100 rows and
-//  will not render rows at all in a hidden tab. Same trade as
-//  scrapeYoutube: we steal focus briefly, then hand it straight back.
+//  Opens the playlist page in a real tab and lets playlist.js read it to
+//  the end — the page itself only ever renders 100 rows, so playlist.js
+//  follows YouTube's own continuation chain for the rest (see that file).
+//  Same trade as scrapeYoutube: we steal focus briefly, then hand it back.
 //
 //  No YouTube Data API: the rows are read from the user's own signed-in
 //  page, so their unlisted and private playlists work too.
