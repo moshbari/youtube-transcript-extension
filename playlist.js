@@ -41,6 +41,24 @@
     return null;
   }
 
+  // MEASURED: a playlist page carries TWO scripts mentioning ytInitialData —
+  // the ~1MB data blob and a ~1KB bystander. Taking the first match is a coin
+  // flip, so return every candidate, biggest and `var`-declared first, and let
+  // the caller keep trying until one actually parses into videos.
+  function initialDataCandidates() {
+    const out = [];
+    for (const s of document.querySelectorAll('script')) {
+      const t = s.textContent || '';
+      if (t.includes('ytInitialData')) out.push(t);
+    }
+    return out.sort((a, b) => {
+      const av = /^\s*var\s+ytInitialData/.test(a) ? 1 : 0;
+      const bv = /^\s*var\s+ytInitialData/.test(b) ? 1 : 0;
+      if (av !== bv) return bv - av;
+      return b.length - a.length;
+    });
+  }
+
   // Brace-balanced extract, string-aware so a '}' inside a title can't end it.
   function braceJson(text, startKey) {
     const i = text.indexOf(startKey); if (i < 0) return null;
@@ -146,10 +164,10 @@
 
   try {
     // Wait for the page's data to be present at all.
-    let raw = null;
-    for (let i = 0; i < 40 && !raw; i++) {
-      raw = inlineScript('ytInitialData');
-      if (!raw) await sleep(250);
+    let candidates = [];
+    for (let i = 0; i < 40 && !candidates.length; i++) {
+      candidates = initialDataCandidates();
+      if (!candidates.length) await sleep(250);
     }
 
     const seen = new Set();
@@ -159,15 +177,16 @@
     let tokens = [];
     let fastPath = false;
 
-    // The inline <script> of the FIRST page load survives SPA navigation, so
-    // data that isn't for THIS list must never be trusted (the v3.4 lesson).
-    if (raw && (!listId || raw.includes(listId))) {
+    for (const raw of candidates) {
+      // The inline <script> of the FIRST page load survives SPA navigation, so
+      // data that isn't for THIS list must never be trusted (the v3.4 lesson).
+      if (listId && !raw.includes(listId)) continue;
       const init = braceJson(raw, 'ytInitialData');
-      if (init) {
-        const out = [];
-        collect(init, out, tokens);
-        if (out.length) { fastPath = true; out.forEach(push); }
-      }
+      if (!init) continue;
+      const out = [];
+      const tk = [];
+      collect(init, out, tk);
+      if (out.length) { fastPath = true; tokens = tk; out.forEach(push); break; }
     }
 
     if (fastPath) {
