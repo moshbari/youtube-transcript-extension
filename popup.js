@@ -287,6 +287,10 @@ batchScrapeBtn.addEventListener('click', async () => {
 
   const toCouncil = document.getElementById('batchToCouncil').checked;
   const lang = document.getElementById('batchLang').value;
+  // Per-run override of the never-download-twice memory. Ticking this re-scrapes
+  // the videos in THIS list and leaves the memory of everything else alone —
+  // the alternative used to be wiping the whole list.
+  const force = !!(document.getElementById('batchForce') || {}).checked;
 
   let urls = found.map(v => v.url);
 
@@ -303,7 +307,7 @@ batchScrapeBtn.addEventListener('click', async () => {
     setBatchUiActive(true);
 
     const tokens = raw.split(/[\s,]+/).filter(Boolean);
-    chrome.runtime.sendMessage({ action: 'startPlaylistBatch', urls: tokens, toCouncil, lang })
+    chrome.runtime.sendMessage({ action: 'startPlaylistBatch', urls: tokens, toCouncil, lang, force })
       .then((res) => {
         if (res && !res.ok) {
           batchStatusEl.textContent = res.error || 'Could not read that playlist.';
@@ -323,7 +327,7 @@ batchScrapeBtn.addEventListener('click', async () => {
   batchStatusEl.style.color = '#00ff88';
   setBatchUiActive(true);
 
-  chrome.runtime.sendMessage({ action: 'startBatch', urls, toCouncil, lang });
+  chrome.runtime.sendMessage({ action: 'startBatch', urls, toCouncil, lang, force });
 });
 
 // Live progress while a playlist is being read, whether it arrives over the
@@ -363,6 +367,7 @@ batchCancelBtn.addEventListener('click', () => {
 });
 
 // ----- "already downloaded" dedup memory: show count + allow reset -----
+// Reads the never-download-twice memory for the line under the buttons.
 function refreshDownloadedCount() {
   const el = document.getElementById('batchDownloadedCount');
   if (!el) return;

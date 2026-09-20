@@ -46,6 +46,7 @@
         <button id="batchClearBtn" class="batch-clear-btn" title="Clear all URLs">Clear</button>
       </div>
       <label class="batch-council-row"><input type="checkbox" id="batchToCouncil" /> Send each to The Closer's Council</label>
+      <label class="batch-council-row"><input type="checkbox" id="batchForce" /> Download again even if already downloaded <span style="color:#9aa3b2;">(for this run only)</span></label>
       <select id="batchLang" class="tella-input" style="display:none; margin-bottom:10px;">
         <option value="bn" selected>Bengali</option>
         <option value="en">English</option>
@@ -60,7 +61,7 @@
       <!-- Dedup memory: how many videos already downloaded + a reset -->
       <div class="batch-dedup-row" style="display:flex;justify-content:space-between;align-items:center;font-size:11px;color:#9aa3b2;margin-top:6px;">
         <span id="batchDownloadedCount"></span>
-        <button id="batchResetDownloaded" class="batch-clear-btn" title="Forget which videos were already downloaded so they can be scraped again">Reset downloaded list</button>
+        <button id="batchResetDownloaded" class="batch-clear-btn" title="Forget EVERY video ever downloaded. To re-download just the ones in this list, tick 'Download again' above instead.">Forget all</button>
       </div>
 
       <!-- Progress section -->

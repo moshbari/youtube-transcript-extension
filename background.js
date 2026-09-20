@@ -206,7 +206,7 @@ async function startBatch(urls, opts = {}) {
   if (!fresh.length) {
     broadcast('batchComplete', {
       state: { active: false, allTotal: urls.length, doneIds: [], skipped, results: [],
-               lastMessage: `Nothing new — all ${skipped} already downloaded.` }
+               lastMessage: `Nothing new — all ${skipped} were downloaded before. Lost the files? Tick "Download again" and press Scrape All.` }
     });
     return;
   }
@@ -219,7 +219,7 @@ async function startBatch(urls, opts = {}) {
     currentTabId: null,
     lastInjectedIndex: -1,
     lastMessage: skipped
-      ? `Starting — ${fresh.length} to scrape (${skipped} already downloaded, skipped)…`
+      ? `Starting — ${fresh.length} to scrape (${skipped} downloaded before, skipped — tick "Download again" to include them)…`
       : `Starting — ${fresh.length} video${fresh.length === 1 ? '' : 's'} to scrape…`,
     // --- retry-until-ready bookkeeping ---
     allTotal: fresh.length,    // total videos this batch is responsible for
@@ -578,7 +578,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // ----- batch control -----
   if (request.action === 'startBatch') {
-    startBatch(request.urls || [], { toCouncil: !!request.toCouncil, lang: request.lang });
+    startBatch(request.urls || [], { toCouncil: !!request.toCouncil, lang: request.lang, force: !!request.force });
     return;
   }
 
@@ -931,7 +931,7 @@ async function setPlaylistState(patch) {
   broadcast('playlistProgress', state);
 }
 
-async function runPlaylistBatch({ urls, toCouncil, lang }) {
+async function runPlaylistBatch({ urls, toCouncil, lang, force }) {
   try {
     await setPlaylistState({ active: true, count: 0, message: 'Opening the playlist...' });
 
@@ -961,7 +961,7 @@ async function runPlaylistBatch({ urls, toCouncil, lang }) {
       message: r.errors.length ? r.errors[0] : `Playlist loaded — ${r.urls.length} videos. Starting...`
     });
 
-    await startBatch(r.urls, { toCouncil: !!toCouncil, lang });
+    await startBatch(r.urls, { toCouncil: !!toCouncil, lang, force: !!force });
   } catch (e) {
     await setPlaylistState({ active: false, error: (e && e.message) || 'Playlist expansion failed' });
   }
@@ -981,7 +981,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     // Answer at once; the work outlives the popup.
     sendResponse({ ok: true, started: true });
-    runPlaylistBatch({ urls, toCouncil: request.toCouncil, lang: request.lang });
+    runPlaylistBatch({ urls, toCouncil: request.toCouncil, lang: request.lang, force: request.force });
   });
   return true; // async sendResponse
 });
