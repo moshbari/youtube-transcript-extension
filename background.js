@@ -736,6 +736,8 @@ function extractYtId(url) {
   if (m) return m[1];
   m = url.match(/\/embed\/([A-Za-z0-9_-]{11})/);
   if (m) return m[1];
+  m = url.match(/\/live\/([A-Za-z0-9_-]{11})/);
+  if (m) return m[1];
   return null;
 }
 
@@ -769,14 +771,166 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     sendResponse({ ok: false, error: 'No YouTube links received.' });
     return true;
   }
-  getQueue().then((existing) => {
+  getQueue().then(async (existing) => {
     if (existing && existing.active) {
       sendResponse({ ok: false, error: 'A batch is already running — wait for it to finish.' });
       return;
     }
-    startBatch(urls, { toCouncil: false, podcastJobs: request.podcastJobs || {} });
-    sendResponse({ ok: true, accepted: urls.length });
+    // A page may hand us a playlist link instead of (or alongside) video
+    // links — expand it here so every consumer gets the same behaviour.
+    let final = urls;
+    if (urls.some((u) => extractPlaylistId(u))) {
+      const ex = await expandPlaylistsInUrls(urls, (p) => broadcast('playlistProgress', p));
+      final = ex.urls;
+      if (!final.length) {
+        sendResponse({ ok: false, error: ex.errors[0] || 'That playlist had no readable videos.' });
+        return;
+      }
+    }
+    startBatch(final, { toCouncil: false, podcastJobs: request.podcastJobs || {} });
+    sendResponse({ ok: true, accepted: final.length });
   });
+  return true; // async sendResponse
+});
+
+// =====================================================================
+//  Playlist expansion — one playlist URL -> every video URL in it.
+// =====================================================================
+//  Opens the playlist page in a real tab and lets playlist.js scroll it
+//  to the end, because YouTube lazy-loads past the first ~100 rows and
+//  will not render rows at all in a hidden tab. Same trade as
+//  scrapeYoutube: we steal focus briefly, then hand it straight back.
+//
+//  No YouTube Data API: the rows are read from the user's own signed-in
+//  page, so their unlisted and private playlists work too.
+
+const PLAYLIST_TIMEOUT_MS = 300000;   // 10k-video playlists exist; be patient
+const playlistResolvers = new Map();  // tabId -> { finish, onProgress }
+
+// Anything after list= that is a real, finite playlist. Mixes/radio (RD...)
+// are auto-generated and effectively endless, so they are refused up front.
+function extractPlaylistId(url) {
+  if (!url) return null;
+  const m = String(url).match(/[?&]list=([A-Za-z0-9_-]{2,})/);
+  if (!m) return null;
+  return m[1];
+}
+
+function isMixPlaylist(listId) {
+  return /^(RD|UL|TL)/.test(listId || '');
+}
+
+function expandPlaylist(listId, onProgress) {
+  return new Promise((resolve) => {
+    const url = `https://www.youtube.com/playlist?list=${encodeURIComponent(listId)}`;
+    let settled = false;
+    let createdTabId = null;
+    let returnToTabId = null;
+    let returnToWindowId = null;
+
+    const finish = (result) => {
+      if (settled) return; settled = true;
+      clearTimeout(timer);
+      if (createdTabId != null) {
+        playlistResolvers.delete(createdTabId);
+        chrome.tabs.remove(createdTabId).catch(() => {});
+      }
+      if (returnToTabId != null) {
+        chrome.tabs.update(returnToTabId, { active: true }).catch(() => {});
+        if (returnToWindowId != null) {
+          chrome.windows.update(returnToWindowId, { focused: true }).catch(() => {});
+        }
+      }
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish({ ok: false, error: 'Timed out loading the playlist.' }), PLAYLIST_TIMEOUT_MS);
+
+    chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+      if (tabs && tabs[0]) {
+        returnToTabId = tabs[0].id;
+        returnToWindowId = tabs[0].windowId;
+      }
+      return chrome.tabs.create({ url, active: true });
+    }).then((tab) => {
+      createdTabId = tab.id;
+      playlistResolvers.set(createdTabId, { finish, onProgress });
+      const onUpd = (tabId, info) => {
+        if (tabId === createdTabId && info.status === 'complete') {
+          chrome.tabs.onUpdated.removeListener(onUpd);
+          chrome.scripting.executeScript({ target: { tabId }, files: ['playlist.js'] })
+            .catch((e) => finish({ ok: false, error: 'inject failed: ' + e.message }));
+        }
+      };
+      chrome.tabs.onUpdated.addListener(onUpd);
+    }).catch((e) => finish({ ok: false, error: 'tab create failed: ' + e.message }));
+  });
+}
+
+// playlist.js reports from inside the playlist tab.
+chrome.runtime.onMessage.addListener((request, sender) => {
+  if (!sender.tab) return;
+  const entry = playlistResolvers.get(sender.tab.id);
+  if (!entry) return;
+  if (request.action === 'playlistProgress') {
+    if (entry.onProgress) entry.onProgress(request.count || 0);
+  } else if (request.action === 'playlistDone') {
+    entry.finish({ ok: true, videos: request.videos || [], title: request.title || '' });
+  } else if (request.action === 'playlistError') {
+    entry.finish({ ok: false, error: request.message || 'Could not read the playlist.' });
+  }
+});
+
+// Turn a mixed paste (video links AND playlist links) into a flat, deduped
+// list of video URLs, expanding every playlist it finds. Shared by the popup
+// and the web-page bridge so both behave identically.
+async function expandPlaylistsInUrls(urls, onProgress) {
+  const seen = new Set();
+  const out = [];
+  const errors = [];
+  const pushId = (id) => {
+    if (!id || seen.has(id)) return;
+    seen.add(id);
+    out.push(`https://www.youtube.com/watch?v=${id}`);
+  };
+
+  for (const raw of urls) {
+    const listId = extractPlaylistId(raw);
+    const bare = String(raw).match(/^([A-Za-z0-9_-]{11})$/);
+    const videoId = extractYtId(raw) || (bare ? bare[1] : null);
+    // A bare /watch link with no list= is just a video. A link carrying a
+    // list= is treated as the playlist the user meant to hand us.
+    if (listId && !isMixPlaylist(listId)) {
+      const r = await expandPlaylist(listId, (count) => {
+        if (onProgress) onProgress({ listId, count });
+      });
+      if (r.ok) {
+        if (onProgress) onProgress({ listId, count: r.videos.length, done: true, title: r.title });
+        for (const v of r.videos) pushId(v.id);
+      } else {
+        errors.push(`Playlist ${listId}: ${r.error}`);
+        if (videoId) pushId(videoId);   // salvage the one video we do have
+      }
+    } else if (listId && isMixPlaylist(listId)) {
+      errors.push('YouTube Mixes / auto-playlists have no fixed end, so they cannot be expanded.');
+      if (videoId) pushId(videoId);
+    } else if (videoId) {
+      pushId(videoId);
+    }
+  }
+  return { urls: out, errors };
+}
+
+// Popup asks for an expansion before it starts a batch.
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (!request || request.action !== 'expandPlaylists') return;
+  const urls = Array.isArray(request.urls) ? request.urls.filter(Boolean) : [];
+  if (!urls.length) {
+    sendResponse({ ok: false, error: 'Nothing to expand.' });
+    return true;
+  }
+  expandPlaylistsInUrls(urls, (p) => broadcast('playlistProgress', p))
+    .then((r) => sendResponse({ ok: true, urls: r.urls, errors: r.errors }))
+    .catch((e) => sendResponse({ ok: false, error: (e && e.message) || 'Playlist expansion failed' }));
   return true; // async sendResponse
 });
 

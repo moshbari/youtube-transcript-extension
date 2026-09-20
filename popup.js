@@ -217,9 +217,34 @@ function extractVideoUrls(text) {
   return out;
 }
 
+// Playlist links are counted separately from video links: we don't know how
+// many videos are inside one until the playlist page has been opened and
+// scrolled, so the count line promises "all videos" rather than a number.
+// Mixes / radio (list=RD...) are endless auto-playlists and are ignored.
+function extractPlaylistIds(text) {
+  const seen = new Set();
+  if (!text) return [];
+  for (const token of text.split(/[\s,]+/).filter(Boolean)) {
+    const m = token.match(/[?&]list=([A-Za-z0-9_-]{2,})/);
+    if (m && !/^(RD|UL|TL)/.test(m[1])) seen.add(m[1]);
+  }
+  return Array.from(seen);
+}
+
 function updateUrlCount() {
   const found = extractVideoUrls(batchUrlsEl.value);
-  if (found.length === 0) {
+  const lists = extractPlaylistIds(batchUrlsEl.value);
+  // A watch link that carries a list= is the playlist's own first video, so
+  // don't advertise it twice — the expansion will pick it up anyway.
+  const loose = lists.length ? Math.max(0, found.length - lists.length) : found.length;
+
+  if (lists.length) {
+    const parts = [`${lists.length} playlist${lists.length === 1 ? '' : 's'} (all videos)`];
+    if (loose) parts.push(`${loose} video${loose === 1 ? '' : 's'}`);
+    batchUrlCountEl.textContent = parts.join(' + ') + ' detected';
+    batchUrlCountEl.style.color = '#00ff88';
+    batchScrapeBtn.disabled = false;
+  } else if (found.length === 0) {
     batchUrlCountEl.textContent = batchUrlsEl.value.trim() ? 'No valid YouTube URLs found' : '';
     batchUrlCountEl.style.color = batchUrlsEl.value.trim() ? '#ff8888' : '#888';
     batchScrapeBtn.disabled = true;
@@ -228,6 +253,18 @@ function updateUrlCount() {
     batchUrlCountEl.style.color = '#00ff88';
     batchScrapeBtn.disabled = false;
   }
+  setScrapeBtnLabel();
+}
+
+// The button says what it will actually do, so dropping a playlist in never
+// looks like it's about to scrape one video.
+function setScrapeBtnLabel() {
+  const toCouncil = document.getElementById('batchToCouncil');
+  const hasList = extractPlaylistIds(batchUrlsEl.value).length > 0;
+  const council = toCouncil && toCouncil.checked;
+  batchScrapeBtn.textContent = hasList
+    ? (council ? 'Load playlist → Council' : 'Load playlist & scrape all')
+    : (council ? 'Scrape all → Council' : 'Scrape All');
 }
 
 batchUrlsEl.addEventListener('input', () => {
@@ -242,20 +279,70 @@ batchClearBtn.addEventListener('click', () => {
   batchUrlsEl.focus();
 });
 
-batchScrapeBtn.addEventListener('click', () => {
-  const found = extractVideoUrls(batchUrlsEl.value);
-  if (found.length === 0) return;
+batchScrapeBtn.addEventListener('click', async () => {
+  const raw = batchUrlsEl.value;
+  const lists = extractPlaylistIds(raw);
+  const found = extractVideoUrls(raw);
+  if (found.length === 0 && lists.length === 0) return;
 
-  const urls = found.map(v => v.url);
   const toCouncil = document.getElementById('batchToCouncil').checked;
   const lang = document.getElementById('batchLang').value;
-  batchStatusEl.textContent = toCouncil
-    ? `Starting batch of ${urls.length} videos → Council...`
-    : `Starting batch of ${urls.length} videos...`;
-  batchStatusEl.style.color = '#00ff88';
+
+  let urls = found.map(v => v.url);
+
+  // ----- playlist first: turn every list= link into its videos -----
+  if (lists.length) {
+    batchScrapeBtn.disabled = true;
+    batchStatusEl.style.color = '#00ff88';
+    batchStatusEl.textContent = lists.length === 1
+      ? 'Opening the playlist and loading every video...'
+      : `Opening ${lists.length} playlists and loading every video...`;
+
+    // Hand the raw lines over: background.js keeps playlist order and dedupes
+    // the loose video links against them.
+    const tokens = raw.split(/[\s,]+/).filter(Boolean);
+    let res;
+    try {
+      res = await chrome.runtime.sendMessage({ action: 'expandPlaylists', urls: tokens });
+    } catch (e) {
+      res = { ok: false, error: (e && e.message) || 'Could not reach the extension background.' };
+    }
+    batchScrapeBtn.disabled = false;
+
+    if (!res || !res.ok || !res.urls || res.urls.length === 0) {
+      batchStatusEl.textContent = (res && (res.error || (res.errors && res.errors[0]))) || 'Could not read that playlist.';
+      batchStatusEl.style.color = '#ff4444';
+      return;
+    }
+    urls = res.urls;
+    // Show what was found, so the queue is never a black box.
+    batchUrlsEl.value = urls.join('\n');
+    chrome.storage.local.set({ [BATCH_DRAFT_KEY]: batchUrlsEl.value });
+    updateUrlCount();
+    if (res.errors && res.errors.length) {
+      batchStatusEl.textContent = res.errors[0];
+      batchStatusEl.style.color = '#ffaa00';
+    }
+  }
+
+  if (!urls.length) return;
+
+  const prefix = lists.length ? `Playlist: ${urls.length} videos found — starting` : `Starting batch of ${urls.length} videos`;
+  batchStatusEl.textContent = toCouncil ? `${prefix} → Council...` : `${prefix}...`;
+  if (!lists.length || !batchStatusEl.style.color) batchStatusEl.style.color = '#00ff88';
   setBatchUiActive(true);
 
   chrome.runtime.sendMessage({ action: 'startBatch', urls, toCouncil, lang });
+});
+
+// Live count while a playlist page is being scrolled in its own tab.
+chrome.runtime.onMessage.addListener((request) => {
+  if (!request || request.action !== 'playlistProgress') return;
+  const n = request.count || 0;
+  batchStatusEl.style.color = '#00ff88';
+  batchStatusEl.textContent = request.done
+    ? `Playlist loaded — ${n} videos${request.title ? ` from "${request.title}"` : ''}.`
+    : `Loading playlist... ${n} videos found so far`;
 });
 
 // Council toggle: reveal the language picker + relabel the action button.
@@ -264,7 +351,7 @@ batchScrapeBtn.addEventListener('click', () => {
   const langSel = document.getElementById('batchLang');
   if (cb) cb.addEventListener('change', () => {
     if (langSel) langSel.style.display = cb.checked ? '' : 'none';
-    batchScrapeBtn.textContent = cb.checked ? 'Scrape all → Council' : 'Scrape All';
+    setScrapeBtnLabel();
   });
 })();
 
