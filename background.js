@@ -27,12 +27,18 @@ const PER_VIDEO_TIMEOUT_MIN = 2;   // chrome.alarms minimum granularity is ~30s
 const TIMEOUT_ALARM         = 'batchVideoTimeout';
 
 // ---- Retry-until-ready + dedup (batch) ----
-// A batch makes repeated PASSES over its videos. The FIRST pass is delayed one
-// interval too (YouTube needs a few minutes to generate captions after upload),
-// so we never scrape immediately. Any video whose transcript isn't ready yet
-// fails its pass and is retried on the next pass, 3 minutes later, until every
-// video has downloaded or we hit the pass cap. Modelled on the Tella poll loop
-// further down.
+// A batch makes repeated PASSES over its videos. The first pass starts AT ONCE.
+// Any video whose transcript isn't ready yet fails its pass and is retried 3
+// minutes later, again and again, until every video has downloaded or we hit
+// the pass cap. Modelled on the Tella poll loop further down.
+//
+// The first pass used to be delayed 3 minutes as well, on the theory that
+// YouTube needs time to make captions after an upload. That's only true for the
+// one caller that hands us a video seconds old (a fresh TubeDrop upload). For a
+// playlist, or any link pasted by hand, the captions have existed for months and
+// the delay bought nothing but three minutes of staring at a spinner. A fresh
+// upload simply fails its instant first pass and picks up the 3-minute retry
+// loop exactly as before — one cheap extra attempt, no behaviour lost.
 const BATCH_RETRY_ALARM = 'batchRetry';
 const BATCH_RETRY_MIN   = 3;     // minutes between passes (and before the first)
 const BATCH_MAX_PASSES  = 60;    // 60 * 3 min ≈ 3 hours of retrying
@@ -53,8 +59,8 @@ async function addDownloadedId(videoId, title) {
 // A single PERIODIC alarm drives all retries (not a chain of one-shots, which
 // breaks if the service worker is killed between passes). It ticks every 3 min
 // for the whole life of a batch; each tick re-runs the still-pending videos.
-// With no delayInMinutes, the first tick also fires after one full period, which
-// is what gives us the "wait 3 min before the very first scrape" behavior.
+// Ticks that land while a pass is already running are ignored (see the handler),
+// so it costs nothing to start this at the same moment as the first pass.
 function ensureBatchRetryAlarm() {
   chrome.alarms.create(BATCH_RETRY_ALARM, { periodInMinutes: BATCH_RETRY_MIN });
 }
@@ -213,8 +219,8 @@ async function startBatch(urls, opts = {}) {
     currentTabId: null,
     lastInjectedIndex: -1,
     lastMessage: skipped
-      ? `Queued (${skipped} already downloaded, skipped). First transcript check in ${BATCH_RETRY_MIN} min…`
-      : `Queued — first transcript check in ${BATCH_RETRY_MIN} min (YouTube needs a moment to make captions)…`,
+      ? `Starting — ${fresh.length} to scrape (${skipped} already downloaded, skipped)…`
+      : `Starting — ${fresh.length} video${fresh.length === 1 ? '' : 's'} to scrape…`,
     // --- retry-until-ready bookkeeping ---
     allTotal: fresh.length,    // total videos this batch is responsible for
     doneIds: [],               // video IDs successfully downloaded this batch
@@ -228,11 +234,10 @@ async function startBatch(urls, opts = {}) {
     // normalizePodcastJobs above for why that mattered.
     podcastJobs,
     returnToTabId, returnToWindowId,
-    // Don't scrape immediately — wait one interval so YouTube has time to
-    // generate captions. The heartbeat alarm's first tick (BATCH_RETRY_MIN
-    // minutes from now) drives the first pass.
-    waiting: true,
-    nextRetryAt: Date.now() + BATCH_RETRY_MIN * 60 * 1000,
+    // Go now. Only videos that actually come back without a transcript wait
+    // for the 3-minute retry loop.
+    waiting: false,
+    nextRetryAt: null,
     // When toCouncil is on, each scraped transcript is sent to The Closer's
     // Council and the follow-up is stored on that video's result.
     toCouncil: !!opts.toCouncil,
@@ -240,11 +245,11 @@ async function startBatch(urls, opts = {}) {
     results: []
   };
   await setQueue(queue);
-  // Start the persistent retry heartbeat NOW. Its first tick (in BATCH_RETRY_MIN
-  // min) kicks off the first pass; if the worker dies in the meantime the alarm
-  // keeps ticking and re-drives the batch.
+  // Arm the retry heartbeat for any video that turns out not to be ready, then
+  // start scraping straight away. A tick arriving mid-pass is a no-op.
   ensureBatchRetryAlarm();
   await broadcastState();
+  await processNext();
 }
 
 // Snap focus back to wherever the user was before the batch stole it.
