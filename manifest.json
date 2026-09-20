@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "YT Transcript Scraper by Mosh Bari",
-  "version": "4.9",
+  "version": "5.0",
   "description": "Scrape YouTube transcripts by Mosh Bari: single, batch or by name, Tella call follow-up, podcast auto-edit, or from your phone.",
   "permissions": [
     "activeTab",
