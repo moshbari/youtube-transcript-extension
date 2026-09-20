@@ -825,8 +825,6 @@ function expandPlaylist(listId, onProgress) {
     const url = `https://www.youtube.com/playlist?list=${encodeURIComponent(listId)}`;
     let settled = false;
     let createdTabId = null;
-    let returnToTabId = null;
-    let returnToWindowId = null;
 
     const finish = (result) => {
       if (settled) return; settled = true;
@@ -835,23 +833,17 @@ function expandPlaylist(listId, onProgress) {
         playlistResolvers.delete(createdTabId);
         chrome.tabs.remove(createdTabId).catch(() => {});
       }
-      if (returnToTabId != null) {
-        chrome.tabs.update(returnToTabId, { active: true }).catch(() => {});
-        if (returnToWindowId != null) {
-          chrome.windows.update(returnToWindowId, { focused: true }).catch(() => {});
-        }
-      }
       resolve(result);
     };
     const timer = setTimeout(() => finish({ ok: false, error: 'Timed out loading the playlist.' }), PLAYLIST_TIMEOUT_MS);
 
-    chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
-      if (tabs && tabs[0]) {
-        returnToTabId = tabs[0].id;
-        returnToWindowId = tabs[0].windowId;
-      }
-      return chrome.tabs.create({ url, active: true });
-    }).then((tab) => {
+    // active:false, unlike scrapeYoutube. A watch page must be VISIBLE for
+    // YouTube to mount the transcript panel, but a playlist needs no rendering
+    // at all — playlist.js reads the server-sent data out of the page and
+    // fetches the rest. Opening it active would also steal focus, and focus
+    // leaving the toolbar CLOSES THE POPUP mid-await, which is exactly how the
+    // first cut of this feature did nothing at all.
+    Promise.resolve(chrome.tabs.create({ url, active: false })).then((tab) => {
       createdTabId = tab.id;
       playlistResolvers.set(createdTabId, { finish, onProgress });
       const onUpd = (tabId, info) => {
@@ -920,17 +912,72 @@ async function expandPlaylistsInUrls(urls, onProgress) {
   return { urls: out, errors };
 }
 
-// Popup asks for an expansion before it starts a batch.
+// ----- playlist -> batch, owned end to end by the background -----
+// The popup must NOT drive this. Chrome closes the popup whenever focus moves,
+// and the popup being closed is the normal case, not the edge case: an awaited
+// sendMessage dies with it and the batch silently never starts. So the popup
+// fires this and forgets, and every scrap of progress goes to storage (for a
+// popup that reopens later) as well as over the wire (for one that's watching).
+const PLAYLIST_STATE_KEY = 'playlistExpandState';
+
+async function setPlaylistState(patch) {
+  const state = { at: Date.now(), ...patch };
+  await chrome.storage.local.set({ [PLAYLIST_STATE_KEY]: state });
+  broadcast('playlistProgress', state);
+}
+
+async function runPlaylistBatch({ urls, toCouncil, lang }) {
+  try {
+    await setPlaylistState({ active: true, count: 0, message: 'Opening the playlist...' });
+
+    const r = await expandPlaylistsInUrls(urls, (p) => {
+      setPlaylistState({
+        active: true,
+        count: p.count || 0,
+        title: p.title || '',
+        message: p.done
+          ? `Playlist loaded — ${p.count} videos.`
+          : `Loading playlist... ${p.count} videos found so far`
+      });
+    });
+
+    if (!r.urls.length) {
+      await setPlaylistState({ active: false, error: r.errors[0] || 'That playlist had no readable videos.' });
+      return;
+    }
+
+    // Put the expanded list where the popup's textarea reads from, so reopening
+    // it shows exactly what got queued instead of the playlist link.
+    await chrome.storage.local.set({ batchUrlsDraft: r.urls.join('\n') });
+    await setPlaylistState({
+      active: false,
+      count: r.urls.length,
+      done: true,
+      message: r.errors.length ? r.errors[0] : `Playlist loaded — ${r.urls.length} videos. Starting...`
+    });
+
+    await startBatch(r.urls, { toCouncil: !!toCouncil, lang });
+  } catch (e) {
+    await setPlaylistState({ active: false, error: (e && e.message) || 'Playlist expansion failed' });
+  }
+}
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  if (!request || request.action !== 'expandPlaylists') return;
+  if (!request || request.action !== 'startPlaylistBatch') return;
   const urls = Array.isArray(request.urls) ? request.urls.filter(Boolean) : [];
   if (!urls.length) {
     sendResponse({ ok: false, error: 'Nothing to expand.' });
     return true;
   }
-  expandPlaylistsInUrls(urls, (p) => broadcast('playlistProgress', p))
-    .then((r) => sendResponse({ ok: true, urls: r.urls, errors: r.errors }))
-    .catch((e) => sendResponse({ ok: false, error: (e && e.message) || 'Playlist expansion failed' }));
+  getQueue().then((existing) => {
+    if (existing && existing.active) {
+      sendResponse({ ok: false, error: 'A batch is already running — wait for it to finish.' });
+      return;
+    }
+    // Answer at once; the work outlives the popup.
+    sendResponse({ ok: true, started: true });
+    runPlaylistBatch({ urls, toCouncil: request.toCouncil, lang: request.lang });
+  });
   return true; // async sendResponse
 });
 

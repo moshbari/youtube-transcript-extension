@@ -290,59 +290,61 @@ batchScrapeBtn.addEventListener('click', async () => {
 
   let urls = found.map(v => v.url);
 
-  // ----- playlist first: turn every list= link into its videos -----
+  // ----- playlist: hand the whole job to the background and let go -----
+  // Deliberately NOT awaited here. Reading a playlist opens a tab, and any
+  // focus change closes this popup — an awaited reply would die with it and
+  // the batch would never start (which is exactly what happened the first
+  // time). The background owns the flow and reports through storage.
   if (lists.length) {
-    batchScrapeBtn.disabled = true;
     batchStatusEl.style.color = '#00ff88';
     batchStatusEl.textContent = lists.length === 1
       ? 'Opening the playlist and loading every video...'
       : `Opening ${lists.length} playlists and loading every video...`;
+    setBatchUiActive(true);
 
-    // Hand the raw lines over: background.js keeps playlist order and dedupes
-    // the loose video links against them.
     const tokens = raw.split(/[\s,]+/).filter(Boolean);
-    let res;
-    try {
-      res = await chrome.runtime.sendMessage({ action: 'expandPlaylists', urls: tokens });
-    } catch (e) {
-      res = { ok: false, error: (e && e.message) || 'Could not reach the extension background.' };
-    }
-    batchScrapeBtn.disabled = false;
-
-    if (!res || !res.ok || !res.urls || res.urls.length === 0) {
-      batchStatusEl.textContent = (res && (res.error || (res.errors && res.errors[0]))) || 'Could not read that playlist.';
-      batchStatusEl.style.color = '#ff4444';
-      return;
-    }
-    urls = res.urls;
-    // Show what was found, so the queue is never a black box.
-    batchUrlsEl.value = urls.join('\n');
-    chrome.storage.local.set({ [BATCH_DRAFT_KEY]: batchUrlsEl.value });
-    updateUrlCount();
-    if (res.errors && res.errors.length) {
-      batchStatusEl.textContent = res.errors[0];
-      batchStatusEl.style.color = '#ffaa00';
-    }
+    chrome.runtime.sendMessage({ action: 'startPlaylistBatch', urls: tokens, toCouncil, lang })
+      .then((res) => {
+        if (res && !res.ok) {
+          batchStatusEl.textContent = res.error || 'Could not read that playlist.';
+          batchStatusEl.style.color = '#ff4444';
+          setBatchUiActive(false);
+        }
+      })
+      .catch(() => {});   // popup closed — the background carries on regardless
+    return;
   }
 
   if (!urls.length) return;
 
-  const prefix = lists.length ? `Playlist: ${urls.length} videos found — starting` : `Starting batch of ${urls.length} videos`;
-  batchStatusEl.textContent = toCouncil ? `${prefix} → Council...` : `${prefix}...`;
-  if (!lists.length || !batchStatusEl.style.color) batchStatusEl.style.color = '#00ff88';
+  batchStatusEl.textContent = toCouncil
+    ? `Starting batch of ${urls.length} videos → Council...`
+    : `Starting batch of ${urls.length} videos...`;
+  batchStatusEl.style.color = '#00ff88';
   setBatchUiActive(true);
 
   chrome.runtime.sendMessage({ action: 'startBatch', urls, toCouncil, lang });
 });
 
-// Live count while a playlist page is being scrolled in its own tab.
+// Live progress while a playlist is being read, whether it arrives over the
+// wire or from storage after the popup was reopened.
+function renderPlaylistState(st) {
+  if (!st) return;
+  if (st.error) {
+    batchStatusEl.textContent = st.error;
+    batchStatusEl.style.color = '#ff4444';
+    setBatchUiActive(false);
+    return;
+  }
+  batchStatusEl.style.color = '#00ff88';
+  batchStatusEl.textContent = st.message ||
+    (st.done ? `Playlist loaded — ${st.count || 0} videos.` : `Loading playlist... ${st.count || 0} videos found so far`);
+  if (st.active) setBatchUiActive(true);
+}
+
 chrome.runtime.onMessage.addListener((request) => {
   if (!request || request.action !== 'playlistProgress') return;
-  const n = request.count || 0;
-  batchStatusEl.style.color = '#00ff88';
-  batchStatusEl.textContent = request.done
-    ? `Playlist loaded — ${n} videos${request.title ? ` from "${request.title}"` : ''}.`
-    : `Loading playlist... ${n} videos found so far`;
+  renderPlaylistState(request);
 });
 
 // Council toggle: reveal the language picker + relabel the action button.
@@ -485,6 +487,12 @@ chrome.storage.local.get(['batchQueue', BATCH_DRAFT_KEY], (result) => {
     batchUrlsEl.value = result[BATCH_DRAFT_KEY];
   }
   updateUrlCount();
+
+  // A playlist read may still be running from before this popup was opened.
+  chrome.storage.local.get(['playlistExpandState'], (r2) => {
+    const st = r2 && r2.playlistExpandState;
+    if (st && st.active) { activateMode('batch'); renderPlaylistState(st); }
+  });
 
   const batchQueue = result.batchQueue;
   if (batchQueue && batchQueue.active) {
